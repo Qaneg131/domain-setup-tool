@@ -754,6 +754,60 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
 
 
 # ---------------------------------------------------------------- Namecheap
+def _first_visible_now(loc, max_check=20):
+    """Trả về phần tử đầu tiên đang HIỂN THỊ trong locator (kiểm tra ngay,
+    không chờ). Dùng khi locator khớp nhiều phần tử mà phần tử đầu có thể
+    nằm trong menu/panel đang ẨN (vd ô search mobile) — .first sẽ trúng
+    phần tử ẩn và chờ mãi không hiện, dù ô thật đang hiện rõ ở chỗ khác."""
+    try:
+        for el in loc.all()[:max_check]:
+            try:
+                if el.is_visible():
+                    return el
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _find_list_search(page, timeout=15000):
+    """Tìm ô Search của Domain List (ô cạnh Filters). Trang là SPA, list
+    load xong ô mới hiện nên chờ tối đa timeout, mỗi vòng thử nhiều cách
+    (kiểm tra ngay, không chờ từng cái):
+    1. input có placeholder đúng 'Search' — ô tìm domain ở đầu trang là
+       'Search for your next domain' nên không khớp cái này.
+    2. placeholder đúng 'Search' (Playwright exact).
+    3. textbox có tên 'Search'.
+    4. bất kỳ ô nào có placeholder chứa 'search', trừ ô tìm domain ở đầu
+       trang ('...next domain') — phòng khi placeholder đổi chữ."""
+    deadline = time.time() + timeout / 1000
+    while time.time() < deadline:
+        el = _first_visible_now(page.locator("input[placeholder='Search']"))
+        if el:
+            return el
+        el = _first_visible_now(page.get_by_placeholder("Search", exact=True))
+        if el:
+            return el
+        el = _first_visible_now(page.get_by_role("textbox", name="Search", exact=True))
+        if el:
+            return el
+        try:
+            for cand in page.locator("input[placeholder*='search' i]").all():
+                try:
+                    ph = (cand.get_attribute("placeholder") or "").lower()
+                    if "next domain" in ph:
+                        continue
+                    if cand.is_visible():
+                        return cand
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        page.wait_for_timeout(400)
+    return None
+
+
 def namecheap_open_manage(page, domain):
     """Mở trang Manage của domain ở Namecheap, đúng luồng user chỉ:
     ap.www.namecheap.com -> Domain List -> ô Search cạnh Filters -> gõ
@@ -763,20 +817,21 @@ def namecheap_open_manage(page, domain):
     nút MANAGE đầu tiên bấm được có thể là của domain khác.)"""
     log(f"  Namecheap: tìm {domain} trong Domain List")
     page.goto("https://ap.www.namecheap.com/domains/list", wait_until="domcontentloaded")
-    page.wait_for_timeout(2500)
-    # Ô Search nằm cạnh Filters (ảnh 1). Nếu trang chưa load đúng, thử bấm
-    # "Domain List" ở menu trái rồi tìm lại.
-    search = page.get_by_placeholder("Search").first
-    try:
-        search.wait_for(state="visible", timeout=8000)
-    except Exception:
+    # Ô Search nằm cạnh Filters (xem _find_list_search: thử nhiều cách,
+    # chọn ô đang HIỂN THỊ, không lấy .first vì .first hay trúng ô search
+    # đang ẩn ở đầu trang). Nếu trang chưa load đúng, thử bấm "Domain List"
+    # ở menu trái rồi tìm lại.
+    search = _find_list_search(page, timeout=15000)
+    if not search:
         try:
             page.get_by_role("link", name=re.compile("Domain List", re.I)).first.click(timeout=5000)
-            page.wait_for_timeout(2500)
-            search.wait_for(state="visible", timeout=8000)
         except Exception:
-            shot(page, domain, "nc-list-no-search")
-            raise RuntimeError("không thấy ô Search ở Domain List của Namecheap")
+            pass
+        page.wait_for_timeout(2500)
+        search = _find_list_search(page, timeout=15000)
+    if not search:
+        shot(page, domain, "nc-list-no-search")
+        raise RuntimeError("không thấy ô Search ở Domain List của Namecheap")
     search.click()
     search.fill(domain)
     page.keyboard.press("Enter")
