@@ -42,6 +42,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -115,6 +117,77 @@ def cdp_alive(port=CDP_PORT):
         return r.status_code == 200
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------- bước 1: mở tab đăng nhập
+CLOUDFLARE_LOGIN_URL = "https://dash.cloudflare.com/login"
+NAMECHEAP_LOGIN_URL = "https://www.namecheap.com/myaccount/login/"
+SESSION_FILE = REPORTS_DIR / "last-chrome.json"
+
+
+def write_session(data):
+    try:
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+    except Exception:
+        pass
+
+
+def open_tab_via_cdp(port, url):
+    """Mở 1 tab mới trong Chrome đang chạy (qua cổng debug HTTP)."""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/json/new?{urllib.parse.urlencode({'url': url})}",
+            method="PUT")
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception as e:
+        log(f"  Mở tab {url} lỗi: {e}")
+        return False
+
+
+def prepare_login_chrome(args, profile, profile_dir_name, chrome_exe):
+    """Nút 1 — chỉ mở Chrome với 2 tab đăng nhập Cloudflare + Namecheap,
+    rồi DỪNG Ở ĐÓ. Không điều khiển trang, không kiểm tra, không reload —
+    user tự đăng nhập xong rồi bấm nút 2 để chạy tiếp. Trả về exit code."""
+    if cdp_alive(args.cdp_port):
+        log(f"Chrome đã mở sẵn qua cổng debug {args.cdp_port} — mở 2 tab đăng nhập trong đó.")
+        open_tab_via_cdp(args.cdp_port, CLOUDFLARE_LOGIN_URL)
+        open_tab_via_cdp(args.cdp_port, NAMECHEAP_LOGIN_URL)
+        write_session({"cdp_port": args.cdp_port, "profile_copy": None, "mode": "cdp"})
+        log("Đã mở 2 tab: Cloudflare + Namecheap.")
+        log("Đăng nhập xong cả 2 tab rồi bấm nút 2 (Chạy tiếp).")
+        return 0
+    if not chrome_exe or not Path(chrome_exe).exists():
+        log("Không tìm thấy chrome.exe — hãy chạy start-chrome.bat trước rồi bấm nút 1 lại.")
+        return 2
+    profile_copy = prepare_profile_copy(profile, profile_dir_name)
+    use_dir = profile_copy or profile
+    if not profile_copy:
+        log("  (Không copy được profile — Chrome sẽ mở bằng profile thật,")
+        log("   tab đăng nhập vẫn mở, nhưng lúc chạy có thể phải đăng nhập lại.)")
+    cmd = [chrome_exe, f"--user-data-dir={use_dir}",
+           f"--remote-debugging-port={args.cdp_port}", "--no-first-run",
+           CLOUDFLARE_LOGIN_URL, NAMECHEAP_LOGIN_URL]
+    log("Mở Chrome với 2 tab đăng nhập (Cloudflare + Namecheap)...")
+    kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(cmd, **kwargs)  # Chrome tách ra chạy riêng, không đóng khi tool thoát
+    for _ in range(30):
+        if cdp_alive(args.cdp_port):
+            break
+        time.sleep(1)
+    if not cdp_alive(args.cdp_port):
+        log("Chrome mở lên nhưng không bật được cổng debug — thử bấm nút 1 lại.")
+        return 2
+    write_session({"cdp_port": args.cdp_port, "profile_copy": profile_copy, "mode": "copy"})
+    log("Đã mở Chrome với 2 tab: Cloudflare + Namecheap.")
+    log("Đăng nhập xong cả 2 tab rồi bấm nút 2 (Chạy tiếp).")
+    return 0
 
 
 def chrome_already_running():
@@ -354,11 +427,15 @@ def ensure_logged_in(page, site, start_url, login_markers, wait_minutes=5):
     # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
     # Thay vào đó tự kiểm tra mỗi 5 giây — user đăng nhập xong trong cửa sổ
     # Chrome vừa mở là tool tự chạy tiếp. Quá 5 phút vẫn chưa đăng nhập thì lỗi.
+    # QUAN TRỌNG: chỉ điều hướng 1 lần duy nhất rồi CHỈ ĐỌC nội dung khi chờ.
+    # Bản cũ gọi page.goto() trong mỗi vòng lặp (~7 giây/lần) nên trang cứ
+    # reload liên tục, user đang gõ mật khẩu / làm xác minh thì bị reset —
+    # không đăng nhập được.
     deadline = time.time() + wait_minutes * 60
     warned = False
+    page.goto(start_url, wait_until="domcontentloaded")
+    page.wait_for_timeout(2000)
     while True:
-        page.goto(start_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
         body = ""
         try:
             body = page.content().lower()
@@ -757,7 +834,24 @@ def main():
     ap.add_argument("--only-cloudflare", action="store_true")
     ap.add_argument("--only-namecheap", action="store_true")
     ap.add_argument("--keep-open", action="store_true", help="Chạy xong không đóng Chrome")
+    ap.add_argument("--prepare", action="store_true",
+                    help="Nút 1: chỉ mở Chrome với 2 tab đăng nhập Cloudflare + Namecheap rồi dừng")
     args = ap.parse_args()
+
+    profile = args.profile or str(default_profile_dir())
+    chrome_exe = args.chrome_path or default_chrome_exe()
+    # Chọn hồ sơ Chrome: user chỉ định > hồ sơ dùng gần nhất > Default.
+    # (Trước đây tool luôn copy 'Default' nên mở lộn hồ sơ nếu user đăng
+    # nhập Cloudflare/Namecheap ở hồ sơ khác, vd 'Profile 1'.)
+    profiles, last_used = list_chrome_profiles(profile)
+    if args.profile_dir:
+        profile_dir_name = args.profile_dir
+    elif last_used:
+        profile_dir_name = last_used
+    else:
+        profile_dir_name = "Default"
+    if args.prepare:
+        sys.exit(prepare_login_chrome(args, profile, profile_dir_name, chrome_exe))
 
     domains = []
     if args.domain:
@@ -776,18 +870,6 @@ def main():
                                       {"type": "A", "name": "www", "content": args.target_ip, "proxied": True}]}
     file_map = parse_records_file(args.records_file) if args.records_file else {}
 
-    profile = args.profile or str(default_profile_dir())
-    chrome_exe = args.chrome_path or default_chrome_exe()
-    # Chọn hồ sơ Chrome: user chỉ định > hồ sơ dùng gần nhất > Default.
-    # (Trước đây tool luôn copy 'Default' nên mở lộn hồ sơ nếu user đăng
-    # nhập Cloudflare/Namecheap ở hồ sơ khác, vd 'Profile 1'.)
-    profiles, last_used = list_chrome_profiles(profile)
-    if args.profile_dir:
-        profile_dir_name = args.profile_dir
-    elif last_used:
-        profile_dir_name = last_used
-    else:
-        profile_dir_name = "Default"
     display = dict(profiles).get(profile_dir_name, profile_dir_name)
     log(f"Profile Chrome: {profile}")
     if profiles:

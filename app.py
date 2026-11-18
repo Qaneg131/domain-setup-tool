@@ -4,11 +4,13 @@ App desktop: Namecheap -> Cloudflare BẰNG CHROME ĐÃ ĐĂNG NHẬP.
 Mở bằng cách double-click run-app.bat (hoặc: python app.py).
 
 KHÔNG cần API key / token, không nhập mật khẩu.
-KHÔNG cần mở web http://127.0.0.1:8000, không cần đóng Chrome:
-- Dán domain vào ô, bấm "Chạy bằng Chrome".
-- App tự copy profile Chrome sang thư mục tạm rồi mở Chrome từ bản copy
-  (vẫn đăng nhập sẵn Cloudflare + Namecheap), tab làm việc hiện lên trước
-  để bạn xem trực tiếp từng bước. Chrome thật của bạn cứ mở bình thường.
+KHÔNG cần mở web http://127.0.0.1:8000, không cần đóng Chrome.
+2 nút, làm theo thứ tự:
+- Nút 1 "Mở tab đăng nhập": mở Chrome (bản copy profile) với 2 tab
+  đăng nhập Cloudflare + Namecheap rồi DỪNG — không chạm vào trang nữa,
+  bạn tự đăng nhập trong 2 tab đó, không bị reload làm gián đoạn.
+- Nút 2 "Chạy tiếp": sau khi đăng nhập xong cả 2, bấm để tool nối vào
+  Chrome đó và chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
 - Chạy xong Chrome vẫn mở để bạn kiểm tra lại, kết quả hiện trong bảng
   bên dưới, log đầy đủ ở ô cuối. Bản copy profile tạm được xoá sau 1 ngày.
 """
@@ -52,8 +54,9 @@ class App(tk.Tk):
 
         ttk.Label(self, text="Domain Setup — Namecheap → Cloudflare",
                   font=("Segoe UI", 14, "bold")).pack(padx=12, pady=(12, 2), anchor="w")
-        ttk.Label(self, text="Dán full domain, chạy hàng loạt tới bước 3 (tạo zone + đổi NS). "
-                  "Không cần key, không cần đóng Chrome — Chrome thật cứ mở bình thường.",
+        ttk.Label(self, text="Bước 1: bấm nút 1 để mở 2 tab đăng nhập, đăng nhập xong "
+                  "Cloudflare + Namecheap. Bước 2: bấm nút 2 để chạy hàng loạt "
+                  "tới bước 3 (tạo zone + đổi NS). Không cần key, không cần đóng Chrome.",
                   wraplength=740).pack(padx=12, pady=2, anchor="w")
 
         ttk.Label(self, text="Full domain (mỗi dòng 1 domain):",
@@ -87,9 +90,12 @@ class App(tk.Tk):
         self.dry_run = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Dry-run (xem trước, không đổi gì thật)",
                         variable=self.dry_run).pack(side="left")
-        self.run_btn = ttk.Button(row, text="Chạy bằng Chrome", command=self.on_run)
+        self.prepare_btn = ttk.Button(row, text="1. Mở tab đăng nhập", command=self.on_prepare)
+        self.prepare_btn.pack(side="right", padx=(6, 0))
+        self.run_btn = ttk.Button(row, text="2. Chạy tiếp", command=self.on_run)
         self.run_btn.pack(side="right")
-        self.status = ttk.Label(self, text="Sẵn sàng.", foreground="#a06a35")
+        self.status = ttk.Label(self, text="Sẵn sàng — bấm nút 1 để mở tab đăng nhập trước.",
+                                foreground="#a06a35")
         self.status.pack(padx=12, anchor="w")
 
         ttk.Label(self, text="Kết quả:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
@@ -126,32 +132,47 @@ class App(tk.Tk):
             pass
         self.after(150, self.poll_queue)
 
+    def _profile_args(self):
+        chosen = self.profile_map.get(self.profile_box.get())
+        return ["--profile-dir", chosen] if chosen else []
+
+    def _start(self, cmd, mode, status_text):
+        self.current_mode = mode
+        self.prepare_btn.configure(state="disabled")
+        self.run_btn.configure(state="disabled")
+        self.status.configure(text=status_text)
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", "end")
+        self.log_box.configure(state="disabled")
+        self.thread = threading.Thread(target=self.run_worker, args=(cmd,), daemon=True)
+        self.thread.start()
+
+    def on_prepare(self):
+        # Nút 1: chỉ mở Chrome với 2 tab đăng nhập rồi dừng — không chạm
+        # vào trang, không reload, để bạn tự đăng nhập thoải mái.
+        cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"), "--prepare"]
+        cmd += self._profile_args()
+        self._start(cmd, "prepare", "Đang mở Chrome với 2 tab đăng nhập...")
+
     def on_run(self):
+        # Nút 2: nối vào Chrome đã mở ở bước 1 và chạy hàng loạt.
+        # Bấm luôn không qua bước 1 cũng được — tool tự mở Chrome như cũ.
         domains = [l.strip().lower() for l in self.domains_box.get("1.0", "end").splitlines()
                    if l.strip() and not l.strip().startswith("#")]
         if not domains:
             messagebox.showwarning("Thiếu domain", "Dán domain vào ô trên, mỗi dòng 1 domain.")
             return
-        self.run_btn.configure(state="disabled")
-        self.status.configure(text="Đang chạy bằng Chrome, xem cửa sổ Chrome để theo dõi...")
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.log_box.configure(state="normal")
-        self.log_box.delete("1.0", "end")
-        self.log_box.configure(state="disabled")
-
         tmpdir = Path(tempfile.mkdtemp(prefix="domain-app-"))
         dom_file = tmpdir / "domains.txt"
         dom_file.write_text("\n".join(domains) + "\n", encoding="utf-8")
         cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"),
                "--domains-file", str(dom_file), "--phase", "1", "--keep-open"]
-        chosen = self.profile_map.get(self.profile_box.get())
-        if chosen:
-            cmd += ["--profile-dir", chosen]
+        cmd += self._profile_args()
         if self.dry_run.get():
             cmd.append("--dry-run")
-        self.thread = threading.Thread(target=self.run_worker, args=(cmd,), daemon=True)
-        self.thread.start()
+        self._start(cmd, "run", "Đang chạy bằng Chrome, xem cửa sổ Chrome để theo dõi...")
 
     def run_worker(self, cmd):
         before = set(glob.glob(str(BASE_DIR / "reports" / "chrome_setup_*.csv")))
@@ -174,6 +195,15 @@ class App(tk.Tk):
 
     def on_done(self, result):
         rc, csv_path = result
+        if getattr(self, "current_mode", "run") == "prepare":
+            if rc == 0:
+                self.status.configure(text="Đã mở Chrome — đăng nhập xong Cloudflare + "
+                                           "Namecheap rồi bấm nút 2 (Chạy tiếp).")
+            else:
+                self.status.configure(text="Mở tab đăng nhập lỗi — xem log bên dưới.")
+            self.prepare_btn.configure(state="normal")
+            self.run_btn.configure(state="normal")
+            return
         ok_n = 0
         total = 0
         if csv_path:
@@ -196,6 +226,7 @@ class App(tk.Tk):
             self.status.configure(text="Chạy xong nhưng chưa có báo cáo — xem log bên dưới.")
         else:
             self.status.configure(text="Chạy lỗi — xem log bên dưới.")
+        self.prepare_btn.configure(state="normal")
         self.run_btn.configure(state="normal")
 
     def on_close(self):

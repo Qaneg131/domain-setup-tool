@@ -16,15 +16,24 @@ playwright install chromium   # 1 lần duy nhất, để có driver Playwright
 
 Rồi double-click **`run-app.bat`** (hoặc chạy `python app.py`).
 
-App hiện 1 cửa sổ: dán full domain, bấm **Chạy bằng Chrome**, xem log +
-kết quả ngay trong app. Không cần mở web, không cần đóng Chrome:
+App hiện 1 cửa sổ: dán full domain, làm 2 bước, xem log + kết quả ngay
+trong app. Không cần mở web, không cần đóng Chrome:
+- **Nút 1 "Mở tab đăng nhập":** mở Chrome (bản copy profile) với 2 tab
+  đăng nhập Cloudflare + Namecheap rồi DỪNG — tool không chạm vào trang
+  nữa, bạn tự đăng nhập trong 2 tab đó, không bị reload làm gián đoạn.
+  (Bản cũ chờ đăng nhập bằng cách load lại trang mỗi ~7 giây nên bạn
+  đang gõ mật khẩu / làm xác minh thì bị reset — đã sửa, giờ chỉ đọc
+  nội dung trang khi chờ, không load lại.)
+- **Nút 2 "Chạy tiếp":** sau khi đăng nhập xong cả 2 tab, bấm để tool
+  nối vào Chrome đó và chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
+  Bấm luôn nút 2 không qua nút 1 cũng được — tool tự mở Chrome như cũ.
 - App tự copy profile Chrome sang thư mục tạm rồi mở Chrome từ bản copy
   đó. Cookie Chrome mã hoá gắn với tài khoản Windows của chính máy đó,
   nên bản copy mở lên vẫn đăng nhập sẵn như Chrome thật. Chrome thật của
   bạn cứ mở bình thường. Chạy xong Chrome vẫn mở để bạn kiểm tra lại.
-- Nếu bản copy không mang được đăng nhập (hiếm), app sẽ mở tab và ĐỢI bạn
-  đăng nhập trong cửa sổ Chrome đó — đăng nhập xong là tool tự chạy tiếp,
-  không cần bấm gì. Quá 5 phút chưa đăng nhập thì tool báo lỗi.
+- Nếu bản copy không mang được đăng nhập, cứ đăng nhập trong cửa sổ
+  Chrome đó — đăng nhập xong là tool tự chạy tiếp, không cần bấm gì.
+  Quá 5 phút chưa đăng nhập thì tool báo lỗi.
 - Tab làm việc mở riêng và đưa lên trước để bạn xem trực tiếp từng bước.
 - **Mở lộn hồ sơ?** Nếu bạn có nhiều hồ sơ Chrome (vd vừa "Default" vừa
   "Profile 1"), chọn đúng hồ sơ hay dùng để đăng nhập Cloudflare /
