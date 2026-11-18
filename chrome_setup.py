@@ -976,6 +976,72 @@ def _find_manage_button(page, domain):
     return None
 
 
+def _js_click_manage(page, domain):
+    """Bấm MANAGE bằng JavaScript, không cần biết nút là thẻ gì
+    (button/a/span/div) hay role gì: tìm phần tử lá có chữ đúng
+    'MANAGE' đang hiển thị, ưu tiên phần tử nằm trong dòng chứa tên
+    domain; nếu chỉ có đúng 1 phần tử như vậy trên trang thì bấm nó.
+    Trả về tag của phần tử đã bấm, hoặc None nếu không tìm được /
+    có nhiều ứng viên mà không xác định được cái nào là của domain."""
+    try:
+        return page.evaluate("""(domain) => {
+          const isVis = e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 &&
+              getComputedStyle(e).visibility !== 'hidden';
+          };
+          const leaves = [...document.querySelectorAll('*')].filter(
+            e => e.children.length === 0 &&
+              e.textContent.trim() === 'MANAGE' && isVis(e));
+          if (!leaves.length) return null;
+          const inRow = leaves.find(e => {
+            let a = e.parentElement;
+            while (a) {
+              if (a.tagName === 'TR' ||
+                  (a.className && /row|domain/i.test(String(a.className)))) {
+                return a.textContent.includes(domain);
+              }
+              a = a.parentElement;
+            }
+            return false;
+          });
+          // Chi bam khi xac dinh duoc dung dong cua domain. Du phong
+          // "chi co 1 nut MANAGE tren trang" chi ap dung khi KHONG co
+          // dong <tr> nao cua domain (layout khong phai bang) — neu
+          // dong cua domain hien ra ma trong do khong co MANAGE thi
+          // khong bam nut cua domain khac.
+          const hasDomainRow = [...document.querySelectorAll('tr')].some(
+            tr => isVis(tr) && tr.textContent.includes(domain));
+          const target = inRow ||
+            (!hasDomainRow && leaves.length === 1 ? leaves[0] : null);
+          if (!target) return null;
+          target.click();
+          return target.tagName;
+        }""", domain)
+    except Exception:
+        return None
+
+
+def _log_manage_diagnosis(page, domain):
+    """Khi không bấm được MANAGE: ghi HTML thật của dòng domain vào
+    log (tối đa 600 ký tự) để lần sau nhìn là biết nút là dạng nào,
+    khỏi đoán mò qua ảnh chụp."""
+    try:
+        rows = page.locator("tr", has_text=domain)
+        if rows.count() > 0:
+            html = rows.first.evaluate("e => e.outerHTML.slice(0, 600)")
+            log(f"    [chẩn đoán] dòng {domain}: {html}")
+            return
+    except Exception:
+        pass
+    try:
+        n = page.locator("text=MANAGE").count()
+        log(f"    [chẩn đoán] không có dòng <tr> chứa {domain}; "
+            f"số phần tử chứa chữ MANAGE trên trang: {n}")
+    except Exception:
+        pass
+
+
 def namecheap_open_manage(page, domain):
     """Mở trang Manage của domain ở Namecheap, đúng luồng user chỉ:
     ap.www.namecheap.com -> Domain List -> ô Search cạnh Filters -> gõ
@@ -1014,10 +1080,31 @@ def namecheap_open_manage(page, domain):
         if not manage:
             page.wait_for_timeout(400)
     if not manage:
+        # Không tìm được bằng role/chữ — bấm trực tiếp bằng JavaScript,
+        # không cần biết nút là thẻ/role gì (xem _js_click_manage).
+        tag = _js_click_manage(page, domain)
+        if tag:
+            log(f"    đã bấm MANAGE bằng JavaScript (thẻ <{tag}>).")
+            page.wait_for_timeout(3000)
+        else:
+            _log_manage_diagnosis(page, domain)
+            shot(page, domain, "nc-no-manage")
+            raise RuntimeError(f"không thấy nút MANAGE của {domain} trong Domain List")
+    else:
+        try:
+            manage.click(timeout=5000)
+        except Exception:
+            log("    click thường không được, thử lại bằng JavaScript.")
+        page.wait_for_timeout(3000)
+        if "/domains/list" in page.url:
+            tag = _js_click_manage(page, domain)
+            if tag:
+                log(f"    click thường không chuyển trang, đã bấm lại bằng JavaScript (thẻ <{tag}>).")
+                page.wait_for_timeout(3000)
+    if "/domains/list" in page.url:
+        _log_manage_diagnosis(page, domain)
         shot(page, domain, "nc-no-manage")
-        raise RuntimeError(f"không thấy nút MANAGE của {domain} trong Domain List")
-    manage.click(timeout=5000)
-    page.wait_for_timeout(3000)
+        raise RuntimeError(f"bấm MANAGE của {domain} mà trang không chuyển khỏi Domain List")
     manage_url = page.url
     log(f"    đã mở trang Manage: {manage_url}")
     return manage_url
