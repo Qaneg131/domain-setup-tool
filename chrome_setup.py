@@ -449,6 +449,27 @@ def safe_goto(page, url, what="trang"):
             page.wait_for_timeout(2000)
 
 
+def _any_visible(page, text, max_check=20):
+    """True nếu CÓ ÍT NHẤT 1 chỗ hiện chữ text đang HIỂN THỊ trên trang.
+    Không được chỉ kiểm tra phần tử đầu tiên (.first): trên trang thật,
+    phần tử đầu tiên khớp chữ thường nằm trong menu dropdown đang ẨN
+    (menu user, menu Domains, menu Actions đứng trước nội dung chính
+    trong DOM) nên .first.is_visible() luôn False dù trang đã đăng nhập
+    và chữ đó đang hiện rõ ở chỗ khác — đó chính là bug làm tool chờ mãi
+    trên trang Domain List đã đăng nhập. is_visible() kiểm tra ngay
+    (không chờ), nên duyệt tối đa 20 phần tử vẫn rất nhanh."""
+    try:
+        for el in page.get_by_text(text).all()[:max_check]:
+            try:
+                if el.is_visible():
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 # ---------------------------------------------------------------- login check
 def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
     # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
@@ -482,14 +503,7 @@ def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
         if any(m in url for m in ("login", "sign-in", "signin")):
             needs_login = True
         else:
-            needs_login = True
-            for t in logged_in_texts:
-                try:
-                    if page.get_by_text(t).first.is_visible(timeout=1500):
-                        needs_login = False
-                        break
-                except Exception:
-                    continue
+            needs_login = not any(_any_visible(page, t) for t in logged_in_texts)
         if not needs_login:
             log(f"  đã đăng nhập {site} (Chrome sẵn).")
             return
@@ -500,12 +514,8 @@ def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
             # Nói rõ trang đang hiện gì: nhiều khi URL vẫn là /domains/list
             # nhưng Namecheap hiện form đăng nhập ngay tại URL đó khi chưa
             # đăng nhập — user nhìn URL tưởng đã vào được list.
-            on_login_form = False
-            try:
-                on_login_form = page.get_by_text("Log in to your account").first.is_visible(timeout=1500) or \
-                    page.get_by_role("button", name="Sign in").first.is_visible(timeout=1500)
-            except Exception:
-                pass
+            on_login_form = _any_visible(page, "Log in to your account") or \
+                _any_visible(page, "Sign in")
             try:
                 title = page.title()
             except Exception:
