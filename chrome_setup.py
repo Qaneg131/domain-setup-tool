@@ -843,14 +843,101 @@ def namecheap_open_manage(page, domain):
         raise RuntimeError(f"không tìm thấy {domain} trong Domain List của Namecheap "
                            "(đã search mà không ra — kiểm tra domain có ở Namecheap không)")
     # Sau khi search chỉ còn dòng domain đó (các dòng khác đã lọc hết),
-    # nút MANAGE đầu tiên chính là của nó.
-    manage = page.get_by_role("button", name="MANAGE").first
-    manage.wait_for(state="visible", timeout=5000)
+    # nút MANAGE đầu tiên HIỂN THỊ chính là của nó (không lấy .first vì
+    # .first có thể trúng nút MANAGE đang ẩn trong menu khác — cùng lỗi
+    # như ô Search và kiểm tra đăng nhập trước đây).
+    manage = None
+    deadline = time.time() + 10
+    while time.time() < deadline and manage is None:
+        manage = _first_visible_now(page.get_by_role("button", name="MANAGE"))
+        if not manage:
+            page.wait_for_timeout(400)
+    if not manage:
+        shot(page, domain, "nc-no-manage")
+        raise RuntimeError(f"không thấy nút MANAGE của {domain} trong Domain List")
     manage.click(timeout=5000)
     page.wait_for_timeout(3000)
     manage_url = page.url
     log(f"    đã mở trang Manage: {manage_url}")
     return manage_url
+
+
+def _select_custom_dns(page):
+    """Chọn 'Custom DNS' trong mục Nameservers của trang Manage.
+    Ô này là <select> gốc (ảnh user gửi: dropdown có 3 lựa chọn
+    Namecheap BasicDNS / Web Hosting DNS / Custom DNS) — option trong
+    select đóng không phải chữ thường trong trang nên click theo chữ
+    không bấm được, phải chọn thẳng bằng select_option. Duyệt mọi
+    select trên trang, cái nào có option 'Custom DNS' thì chọn nó.
+    Trả về True nếu chọn được. False = không có select nào như vậy
+    (dropdown tự làm bằng div thì dùng click_text sau đó)."""
+    try:
+        for sel in page.locator("select").all():
+            try:
+                sel.select_option(label="Custom DNS", timeout=2000)
+                log("    đã chọn Custom DNS trong dropdown Nameservers.")
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _click_save_ns(page):
+    """Bấm nút lưu NS ở Namecheap: dấu tick xanh (✓) bên phải mục
+    Nameservers (ảnh user gửi). Nút này có thể mang title/aria 'Save',
+    chữ '✓'/'✔', hoặc chỉ có icon — thử nhiều cách, và tránh nút X (huỷ)."""
+    for sel in ["button[title='Save']", "button[aria-label='Save']",
+                "button[title*='Save' i]", "button[aria-label*='Save' i]",
+                "button:has-text('✓')", "button:has-text('✔')",
+                "button:has-text('Save')"]:
+        btn = _first_visible_now(page.locator(sel))
+        if btn:
+            try:
+                btn.click(timeout=2000)
+                return True
+            except Exception:
+                continue
+    # Quét mọi nút đang hiện: nút nào có title/aria/chữ mang nghĩa lưu
+    # (Save/✓/✔) và không phải nút huỷ (×/Cancel) thì bấm nó.
+    try:
+        for btn in page.locator("button").all():
+            try:
+                if not btn.is_visible():
+                    continue
+                info = ((btn.get_attribute("title") or "") + " " +
+                        (btn.get_attribute("aria-label") or "") + " " +
+                        (btn.inner_text() or "")).strip()
+                if re.search(r"save|✓|✔", info, re.I) and \
+                        not re.search(r"×|✕|cancel|close", info, re.I):
+                    btn.click(timeout=2000)
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    # Nút tick xanh chỉ có icon (không title/aria/chữ): nó nằm cạnh nút X
+    # (huỷ) trong cùng 1 ô — tìm nút X đang hiện rồi bấm nút kề trước nó.
+    try:
+        clicked = page.evaluate("""() => {
+            const btns = [...document.querySelectorAll('button')]
+                .filter(b => b.offsetParent !== null);
+            const x = btns.find(b => (b.textContent || '').includes('\\u00d7') ||
+                (b.title || '').match(/cancel/i) ||
+                (b.getAttribute('aria-label') || '').match(/cancel/i));
+            if (!x || !x.parentElement) return false;
+            const sibs = [...x.parentElement.querySelectorAll('button')]
+                .filter(b => b !== x && b.offsetParent !== null);
+            if (!sibs.length) return false;
+            sibs[sibs.length - 1].click();
+            return true;
+        }""")
+        if clicked:
+            return True
+    except Exception:
+        pass
+    return click_text(page, ["Save", "✓", "✔"])
 
 
 def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
@@ -871,16 +958,11 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
     if dry_run:
         log("    [dry-run] sẽ chọn Custom DNS, dán 2 NS, bấm dấu tick xanh — không lưu thật.")
         return "dry-run"
-    # Chọn Custom DNS trong mục Nameservers
-    if not click_text(page, ["Custom DNS"]):
-        # Dropdown Nameservers: thử chọn option Custom DNS
-        try:
-            sel = page.locator("select").first
-            sel.wait_for(state="visible", timeout=5000)
-            sel.select_option(label="Custom DNS")
-        except Exception:
-            shot(page, domain, "nc-no-customdns")
-            raise RuntimeError("không tìm được Custom DNS ở mục Nameservers")
+    # Chọn Custom DNS trong mục Nameservers (ảnh user gửi: dropdown select
+    # có 3 lựa chọn) — thử select gốc trước, dropdown tự làm thì click chữ.
+    if not _select_custom_dns(page) and not click_text(page, ["Custom DNS"]):
+        shot(page, domain, "nc-no-customdns")
+        raise RuntimeError("không tìm được Custom DNS ở mục Nameservers")
     page.wait_for_timeout(1200)
     # Điền 2 NS vào các ô trong mục Nameservers
     try:
@@ -916,21 +998,8 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
     except Exception as e:
         shot(page, domain, "nc-ns-fill-fail")
         raise RuntimeError(f"không điền được nameserver: {e}")
-    # Lưu: dấu tick xanh (nút Save / checkmark)
-    saved = False
-    for sel in ["button[title='Save']", "button[aria-label='Save']",
-                "button:has-text('✓')", "button:has-text('Save')"]:
-        try:
-            btn = page.locator(sel).first
-            btn.wait_for(state="visible", timeout=3000)
-            btn.click(timeout=3000)
-            saved = True
-            break
-        except Exception:
-            continue
-    if not saved:
-        saved = click_text(page, ["Save"])
-    if not saved:
+    # Lưu: dấu tick xanh (✓) bên phải mục Nameservers (ảnh user gửi).
+    if not _click_save_ns(page):
         shot(page, domain, "nc-no-save")
         raise RuntimeError("không tìm được nút lưu (dấu tick xanh) ở Namecheap")
     page.wait_for_timeout(2500)
