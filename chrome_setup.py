@@ -423,27 +423,36 @@ def doh_ns(domain):
 
 
 # ---------------------------------------------------------------- login check
-def ensure_logged_in(page, site, start_url, login_markers, wait_minutes=5):
+def ensure_logged_in(page, site, start_url, logged_in_text, wait_minutes=5):
     # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
     # Thay vào đó tự kiểm tra mỗi 5 giây — user đăng nhập xong trong cửa sổ
     # Chrome vừa mở là tool tự chạy tiếp. Quá 5 phút vẫn chưa đăng nhập thì lỗi.
-    # QUAN TRỌNG: chỉ điều hướng 1 lần duy nhất rồi CHỈ ĐỌC nội dung khi chờ.
+    # QUAN TRỌNG 1: chỉ điều hướng 1 lần duy nhất rồi CHỈ ĐỌC nội dung khi chờ.
     # Bản cũ gọi page.goto() trong mỗi vòng lặp (~7 giây/lần) nên trang cứ
     # reload liên tục, user đang gõ mật khẩu / làm xác minh thì bị reset —
     # không đăng nhập được.
+    # QUAN TRỌNG 2: KHÔNG tìm chuỗi "sign in"/"log in" trong toàn bộ HTML nữa.
+    # Trang dashboard đã đăng nhập vẫn chứa mấy chuỗi đó ở chỗ ẩn (menu đổi
+    # tài khoản, Turnstile, script...) nên bản cũ tưởng chưa đăng nhập và
+    # đứng im chờ đủ 5 phút dù user đã đăng nhập xong. Giờ chỉ tin 2 dấu hiệu:
+    # URL có phải trang login không, và có thấy dòng chữ chỉ hiện KHI ĐÃ
+    # đăng nhập không (Cloudflare: "Account home" ở menu trái; Namecheap:
+    # "My Account" ở header). Chưa đăng nhập thì trang login sẽ redirect
+    # về URL chứa "login" nên vẫn bắt được.
     deadline = time.time() + wait_minutes * 60
     warned = False
+    last_reminder = 0.0
     page.goto(start_url, wait_until="domcontentloaded")
     page.wait_for_timeout(2000)
     while True:
-        body = ""
-        try:
-            body = page.content().lower()
-        except Exception:
-            pass
         url = page.url.lower()
-        needs_login = any(m in url for m in ("login", "sign-in", "signin")) or \
-            any(m in body for m in login_markers)
+        if any(m in url for m in ("login", "sign-in", "signin")):
+            needs_login = True
+        else:
+            try:
+                needs_login = not page.get_by_text(logged_in_text).first.is_visible(timeout=2000)
+            except Exception:
+                needs_login = True
         if not needs_login:
             log(f"  đã đăng nhập {site} (Chrome sẵn).")
             return
@@ -451,10 +460,14 @@ def ensure_logged_in(page, site, start_url, login_markers, wait_minutes=5):
             raise RuntimeError(f"chưa đăng nhập {site} sau {wait_minutes} phút — "
                                "hãy đăng nhập trong cửa sổ Chrome rồi chạy lại")
         if not warned:
-            log(f"  !! Chưa đăng nhập {site} ở Chrome này.")
+            log(f"  !! Chưa đăng nhập {site} ở Chrome này. Đang ở: {page.url}")
             log("     Hãy đăng nhập NGAY TRONG cửa sổ Chrome vừa mở,")
             log("     tool sẽ tự chạy tiếp khi thấy đã đăng nhập (không cần bấm gì).")
             warned = True
+            last_reminder = time.time()
+        elif time.time() - last_reminder > 30:
+            log(f"  ... vẫn đang đợi đăng nhập {site} (đang ở: {page.url})")
+            last_reminder = time.time()
         page.wait_for_timeout(5000)
 
 
@@ -943,9 +956,9 @@ def main():
         log("Đã nối vào Chrome, đang mở Cloudflare để kiểm tra đăng nhập...")
         try:
             ensure_logged_in(page, "Cloudflare", "https://dash.cloudflare.com/",
-                             ["log in", "sign in", "enter your email"])
+                             "Account home")
             ensure_logged_in(page, "Namecheap", "https://ap.www.namecheap.com/domains/list",
-                             ["log in", "sign in"])
+                             "My Account")
             for d in domains:
                 log(f"=== {d} (phase {args.phase}) ===")
                 results.append(setup_one(page, d, args, presets, file_map))
