@@ -78,6 +78,17 @@ def log(msg):
         print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
+def tool_version():
+    """Mã commit đang chạy — in ra log để biết chắc user đang chạy bản mới
+    hay bản cũ (nhiều lần sửa xong user chạy lại vẫn là bản cũ vì chưa pull)."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(BASE_DIR),
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() or "?"
+    except Exception:
+        return "?"
+
+
 # ---------------------------------------------------------------- profile Chrome
 def default_profile_dir():
     system = platform.system()
@@ -931,6 +942,7 @@ def main():
         profile_dir_name = last_used
     else:
         profile_dir_name = "Default"
+    log(f"Domain Setup tool — bản {tool_version()} (kiểm tra mã này khớp với bản mới nhất trên git chưa)")
     if args.prepare:
         sys.exit(prepare_login_chrome(args, profile, profile_dir_name, chrome_exe))
 
