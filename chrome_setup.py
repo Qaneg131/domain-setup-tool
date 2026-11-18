@@ -432,6 +432,33 @@ def click_text(page, texts, timeout=8000):
     return False
 
 
+def _click_visible(page, texts, timeout=8000):
+    """Bấm nút/link/chữ đầu tiên đang HIỂN THỊ trong danh sách texts.
+    Khác click_text ở chỗ không lấy .first (hay trúng phần tử ẩn) mà
+    duyệt và chỉ bấm cái đang hiện; chờ tới timeout vì trang SPA load
+    chậm. Trả về True nếu bấm được."""
+    if isinstance(texts, str):
+        texts = [texts]
+    deadline = time.time() + timeout / 1000
+    while time.time() < deadline:
+        for t in texts:
+            for loc in [page.get_by_role("button", name=re.compile(re.escape(t), re.I)),
+                        page.get_by_role("link", name=re.compile(re.escape(t), re.I)),
+                        page.get_by_text(t, exact=False)]:
+                # _first_visible_now định nghĩa ở mục Namecheap bên dưới —
+                # Python tìm tên lúc gọi nên dùng được bình thường.
+                el = _first_visible_now(loc)
+                if el:
+                    try:
+                        el.click(timeout=2000)
+                        log(f"    click: '{t}'")
+                        return True
+                    except Exception:
+                        continue
+        page.wait_for_timeout(400)
+    return False
+
+
 def wait_text(page, text, timeout=15000):
     try:
         page.get_by_text(text, exact=False).first.wait_for(state="visible", timeout=timeout)
@@ -603,49 +630,89 @@ def cloudflare_add_site(page, domain, dry_run=False):
         pass
 
     if dry_run:
-        log("    [dry-run] sẽ bấm Add a site, chọn Free, lấy 2 NS — không click thật.")
+        log("    [dry-run] sẽ bấm Add domain -> Connect a domain -> nhập domain -> chọn Free -> lấy 2 NS — không click thật.")
         return [], "dry-run"
 
-    # Bấm Add a site / Onboard a domain
-    ok = click_text(page, ["Add a site", "Add site", "Onboard a domain", "Connect a domain"])
-    if not ok:
-        # Thử vào thẳng trang add-site
-        page.goto("https://dash.cloudflare.com/add-site", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-    # Ô nhập domain
+    # Luồng Cloudflare mới (theo ảnh user gửi 2026-11-18):
+    #   Domains -> Overview (anh 1) -> Add domain (anh 2)
+    #   -> Connect a domain (anh 3) -> nhập domain (anh 4) -> Continue
+    #   -> chọn gói Free (anh 5) -> Review DNS records -> Continue to
+    #   activation (anh 6) -> trang Update nameservers, lấy 2 NS.
+    # (Bản cũ bấm "Add a site" rồi bấm chữ "Free" — giao diện mới không
+    # còn nút đó, và bấm chữ "Free" chỉ bấm vào tiêu đề thẻ chứ không
+    # chọn được gói; phải bấm nút "Select plan" trong thẻ Free.)
+    try:
+        dom_nav = _first_visible_now(page.get_by_role("link", name="Domains"))
+        if dom_nav:
+            dom_nav.click(timeout=3000)
+            page.wait_for_timeout(1200)
+    except Exception:
+        pass
+    # Vào Domains Overview (nếu bấm Domains đã tới thẳng đó thì bước này
+    # chỉ bấm lại link Overview ở sidebar, không sao).
+    _click_visible(page, ["Overview"], timeout=5000)
+    page.wait_for_timeout(1500)
+    # 1. Add domain
+    if not _click_visible(page, ["Add domain"], timeout=8000):
+        shot(page, domain, "cf-no-add-domain")
+        raise RuntimeError("không tìm được nút Add domain ở Cloudflare (trang Domains Overview)")
+    page.wait_for_timeout(2000)
+    # 2. Connect a domain (không phải Transfer/Buy a domain)
+    if not _click_visible(page, ["Connect a domain"], timeout=8000):
+        shot(page, domain, "cf-no-connect")
+        raise RuntimeError("không tìm được 'Connect a domain' ở trang Add a site của Cloudflare")
+    page.wait_for_timeout(2000)
+    # 3. Nhập domain (ô "Domain name", placeholder example.com) -> Continue
     filled = False
-    for sel in ["input[placeholder*='example.com']", "input[placeholder*='domain']",
-                "input[type='text']"]:
-        try:
-            box = page.locator(sel).first
-            box.wait_for(state="visible", timeout=5000)
-            box.click()
-            box.fill(domain)
-            filled = True
-            break
-        except Exception:
-            continue
+    deadline = time.time() + 10
+    while time.time() < deadline and not filled:
+        for sel in ["input[placeholder*='example.com']", "input[placeholder*='domain']"]:
+            box = _first_visible_now(page.locator(sel))
+            if box:
+                try:
+                    box.click()
+                    box.fill(domain)
+                    filled = True
+                    break
+                except Exception:
+                    continue
+        if not filled:
+            page.wait_for_timeout(500)
     if not filled:
         shot(page, domain, "cf-add-no-input")
-        raise RuntimeError("không tìm được ô nhập domain ở Cloudflare Add site")
+        raise RuntimeError("không tìm được ô nhập domain ở Cloudflare (trang Connect your domain)")
     page.wait_for_timeout(800)
-    if not click_text(page, ["Continue", "Add site", "Add Site"]):
+    if not _click_visible(page, ["Continue"], timeout=8000):
         try:
             page.keyboard.press("Enter")
         except Exception:
             pass
-    page.wait_for_timeout(4000)
+    page.wait_for_timeout(3000)
 
-    # Chọn gói Free (nếu trang gói hiện ra)
-    if wait_text(page, "Free", timeout=8000):
-        click_text(page, ["Free"])
-        page.wait_for_timeout(1000)
-        click_text(page, ["Continue"])
-        page.wait_for_timeout(4000)
+    # 4. Chọn gói Free (nếu trang gói hiện ra): bấm nút "Select plan"
+    # trong thẻ Free — thẻ Free xếp đầu tiên nên nút Select plan đầu tiên
+    # HIỂN THỊ chính là của nó (không bấm chữ "Free", đó chỉ là tiêu đề).
+    if _any_visible(page, "Select a plan"):
+        free_btn = None
+        deadline = time.time() + 10
+        while time.time() < deadline and free_btn is None:
+            free_btn = _first_visible_now(page.get_by_role("button", name="Select plan"))
+            if not free_btn:
+                page.wait_for_timeout(400)
+        if not free_btn:
+            shot(page, domain, "cf-no-free-plan")
+            raise RuntimeError("không tìm được nút 'Select plan' của gói Free ở Cloudflare")
+        free_btn.click(timeout=5000)
+        log("    đã chọn gói Free (Select plan).")
+        page.wait_for_timeout(3000)
 
-    # Trang review DNS scan -> Continue to activation
-    click_text(page, ["Continue to activation", "Continue"])
-    page.wait_for_timeout(4000)
+    # 5. Trang Review DNS records -> Continue to activation
+    if not _click_visible(page, ["Continue to activation"], timeout=10000):
+        # Có thể đã ở thẳng trang nameservers (không có bước review)
+        if len(extract_ns(page)) < 2:
+            shot(page, domain, "cf-no-continue-activation")
+            raise RuntimeError("không tìm được nút 'Continue to activation' ở Cloudflare")
+    page.wait_for_timeout(3000)
 
     ns = extract_ns(page)
     # Chưa thấy NS thì thử mở trang Overview của domain
@@ -661,6 +728,41 @@ def cloudflare_add_site(page, domain, dry_run=False):
         raise RuntimeError(f"không lấy được 2 nameserver (chỉ thấy: {ns}) — xem ảnh chụp màn hình")
     log(f"    nameserver: {ns[0]}, {ns[1]}")
     return ns, "created"
+
+
+def cloudflare_confirm_ns(page, domain):
+    """Sau khi đã đổi NS ở Namecheap: quay lại Cloudflare bấm
+    'I updated my nameservers' để Cloudflare kiểm tra ngay (ảnh user gửi
+    2026-11-18: nút xanh cuối trang Update nameservers).
+    Best-effort: không thấy nút thì thôi — zone sẽ tự kích hoạt khi NS lan
+    truyền, không làm fail domain."""
+    log(f"  Cloudflare: xác nhận đã đổi NS cho {domain}")
+    try:
+        page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        link = _first_visible_now(
+            page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)))
+        if link:
+            try:
+                link.click(timeout=5000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2500)
+        if _click_visible(page, ["I updated my nameservers"], timeout=15000):
+            log("    đã bấm 'I updated my nameservers'.")
+            page.wait_for_timeout(2000)
+            return True
+        # Có thể nút nằm trong trang kích hoạt riêng: thử mở nó qua link
+        # 'Update your nameservers' / 'Finish setup' rồi tìm nút lại.
+        if _click_visible(page, ["Update your nameservers", "Finish setup"], timeout=5000):
+            page.wait_for_timeout(2000)
+            if _click_visible(page, ["I updated my nameservers"], timeout=10000):
+                log("    đã bấm 'I updated my nameservers'.")
+                return True
+        log("    (không thấy nút 'I updated my nameservers' — zone sẽ tự kích hoạt khi NS lan truyền.)")
+    except Exception as e:
+        log(f"    (không xác nhận được ở Cloudflare: {e} — không sao, zone sẽ tự kích hoạt.)")
+    return False
 
 
 def cloudflare_add_records(page, domain, records, dry_run=False):
@@ -1076,6 +1178,10 @@ def setup_one(page, domain, args, presets, file_map):
             if not args.only_cloudflare:
                 namecheap_set_ns(page, domain, ns_list, dry_run=args.dry_run,
                                  manage_url=manage_url)
+                # Quay lại Cloudflare bấm "I updated my nameservers" để
+                # xác nhận (ảnh user gửi) — best-effort, không fail domain
+                # nếu không thấy nút.
+                cloudflare_confirm_ns(page, domain)
             result["status"] = "phase1-done" if args.phase == "1" else "phase1-part"
         if args.phase in ("2", "all"):
             recs = records_for_domain(domain, args, presets, file_map)
