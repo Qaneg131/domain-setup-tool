@@ -470,7 +470,18 @@ def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
             raise RuntimeError(f"chưa đăng nhập {site} sau {wait_minutes} phút — "
                                "hãy đăng nhập trong cửa sổ Chrome rồi chạy lại")
         if not warned:
+            # Nói rõ trang đang hiện gì: nhiều khi URL vẫn là /domains/list
+            # nhưng Namecheap hiện form đăng nhập ngay tại URL đó khi chưa
+            # đăng nhập — user nhìn URL tưởng đã vào được list.
+            on_login_form = False
+            try:
+                on_login_form = page.get_by_text("Log in to your account").first.is_visible(timeout=1500) or \
+                    page.get_by_role("button", name="Sign in").first.is_visible(timeout=1500)
+            except Exception:
+                pass
             log(f"  !! Chưa đăng nhập {site} ở Chrome này. Đang ở: {page.url}")
+            if on_login_form:
+                log("     (Trang đang hiện form đăng nhập — chưa vào được, hãy nhập tài khoản rồi bấm Sign in.)")
             log("     Hãy đăng nhập NGAY TRONG cửa sổ Chrome vừa mở,")
             log("     tool sẽ tự chạy tiếp khi thấy đã đăng nhập (không cần bấm gì).")
             warned = True
