@@ -610,6 +610,102 @@ def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
 
 
 # ---------------------------------------------------------------- Cloudflare
+def _is_free_card_button(btn):
+    """Nút 'Select plan' có nằm trong thẻ gói Free không (thẻ Free là
+    thẻ duy nhất chứa '$0'). Không kiểm tra được thì coi như đúng
+    (nút Select plan đầu tiên HIỂN THỊ vốn là của thẻ Free xếp đầu)."""
+    try:
+        return btn.evaluate("""e => {
+          let a = e;
+          while (a) {
+            const t = a.textContent || '';
+            if (t.includes('$0')) return true;
+            if (t.includes('Pro') || t.includes('Business') || t.includes('Enterprise')) return false;
+            a = a.parentElement;
+          }
+          return false;
+        }""")
+    except Exception:
+        return True
+
+
+def _select_free_plan(page, domain):
+    """Chọn gói Free ở Cloudflare. Trang gói load sau khi gọi API nên
+    phải ĐỢI nó hiện ra (tối đa 15s) thay vì kiểm tra 1 lần ngay sau
+    Continue — welvella.com trượt đúng chỗ này: lúc kiểm tra trang
+    chưa load xong nên bước chọn gói bị bỏ qua, tới bước sau mới thấy
+    đang đứng ở trang gói. Bấm nút 'Select plan' trong thẻ Free rồi
+    kiểm tra trang đã rời khỏi trang gói chưa; chưa thì bấm lại bằng
+    JavaScript. Trả về True nếu đã qua khỏi trang gói (hoặc không có
+    trang gói — đi thẳng tới Review); raise nếu thấy trang gói mà
+    không bấm được nút Free."""
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if _any_visible(page, "Continue to activation"):
+            return True
+        if _any_visible(page, "Select a plan"):
+            break
+        page.wait_for_timeout(500)
+    else:
+        # Hết 15s mà không thấy trang gói lẫn nút Continue: để bước sau
+        # tự xử lý (nó sẽ chụp màn hình + báo lỗi rõ ràng).
+        return False
+    if _any_visible(page, "Continue to activation"):
+        return True
+    for _attempt in range(2):
+        btn = None
+        for loc in (page.get_by_role("button", name="Select plan"),
+                    page.get_by_role("link", name="Select plan"),
+                    page.get_by_text("Select plan", exact=True)):
+            try:
+                for el in loc.all():
+                    try:
+                        if el.is_visible() and _is_free_card_button(el):
+                            btn = el
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+            if btn:
+                break
+        if btn:
+            try:
+                btn.click(timeout=5000)
+            except Exception:
+                pass
+        else:
+            # Không tìm được nút bằng Playwright — thử JavaScript.
+            try:
+                clicked = page.evaluate("""() => {
+                  const isFree = b => {
+                    let a = b;
+                    while (a) {
+                      const t = a.textContent || '';
+                      if (t.includes('$0')) return true;
+                      if (t.includes('Pro') || t.includes('Business') || t.includes('Enterprise')) return false;
+                      a = a.parentElement;
+                    }
+                    return false;
+                  };
+                  const btns = [...document.querySelectorAll('button, a, [role=button]')]
+                    .filter(b => (b.textContent || '').trim() === 'Select plan' && b.offsetParent !== null && isFree(b));
+                  if (!btns.length) return false;
+                  btns[0].click();
+                  return true;
+                }""")
+                if not clicked:
+                    break
+            except Exception:
+                break
+        page.wait_for_timeout(3000)
+        if _any_visible(page, "Continue to activation") or not _any_visible(page, "Select a plan"):
+            log("    đã chọn gói Free (Select plan).")
+            return True
+    shot(page, domain, "cf-no-free-plan")
+    raise RuntimeError("không bấm được nút 'Select plan' của gói Free ở Cloudflare (đang đứng ở trang chọn gói)")
+
+
 def cloudflare_add_site(page, domain, dry_run=False):
     """Add site ở Cloudflare, trả về (nameservers, status)."""
     log(f"  Cloudflare: thêm {domain}")
@@ -689,22 +785,10 @@ def cloudflare_add_site(page, domain, dry_run=False):
             pass
     page.wait_for_timeout(3000)
 
-    # 4. Chọn gói Free (nếu trang gói hiện ra): bấm nút "Select plan"
-    # trong thẻ Free — thẻ Free xếp đầu tiên nên nút Select plan đầu tiên
-    # HIỂN THỊ chính là của nó (không bấm chữ "Free", đó chỉ là tiêu đề).
-    if _any_visible(page, "Select a plan"):
-        free_btn = None
-        deadline = time.time() + 10
-        while time.time() < deadline and free_btn is None:
-            free_btn = _first_visible_now(page.get_by_role("button", name="Select plan"))
-            if not free_btn:
-                page.wait_for_timeout(400)
-        if not free_btn:
-            shot(page, domain, "cf-no-free-plan")
-            raise RuntimeError("không tìm được nút 'Select plan' của gói Free ở Cloudflare")
-        free_btn.click(timeout=5000)
-        log("    đã chọn gói Free (Select plan).")
-        page.wait_for_timeout(3000)
+    # 4. Chọn gói Free (nếu trang gói hiện ra) — xem _select_free_plan:
+    # phải ĐỢI trang gói load xong rồi mới bấm, và kiểm tra trang đã
+    # rời khỏi trang gói chưa (không bấm chữ "Free", đó chỉ là tiêu đề).
+    _select_free_plan(page, domain)
 
     # 5. Trang Review DNS records -> Continue to activation
     if not _click_visible(page, ["Continue to activation"], timeout=10000):
@@ -1185,7 +1269,78 @@ def _click_save_ns(page):
             return True
     except Exception:
         pass
+    # Nút tick xanh có thể không phải <button> (span/a/div, hoặc chỉ có
+    # icon SVG không có chữ/title/aria) nên mọi cách trên đều trượt —
+    # bấm trực tiếp bằng JavaScript, không cần biết thẻ gì: phần tử lá
+    # có chữ đúng '✓'/'✔' đang hiển thị, hoặc phần tử kề trước nút X
+    # (tick xanh nằm ngay bên trái nút X như ảnh user gửi).
+    try:
+        clicked = page.evaluate("""() => {
+            const isVis = e => {
+              const r = e.getBoundingClientRect();
+              return r.width > 0 && r.height > 0 &&
+                getComputedStyle(e).visibility !== 'hidden';
+            };
+            const leafs = [...document.querySelectorAll('*')].filter(
+              e => e.children.length === 0 && isVis(e) &&
+                ['\\u2713', '\\u2714'].includes((e.textContent || '').trim()));
+            if (leafs.length) { leafs[0].click(); return true; }
+            const isX = e => {
+              const t = (e.textContent || '').trim();
+              if (['\\u00d7', '\\u2717', '\\u2715'].includes(t)) return true;
+              const al = ((e.getAttribute('aria-label') || '') + ' ' + (e.title || '')).toLowerCase();
+              return /cancel/.test(al);
+            };
+            const xs = [...document.querySelectorAll('button, a, span, i, [role=button]')]
+              .filter(e => isVis(e) && isX(e));
+            for (const x of xs) {
+              const p = x.parentElement;
+              if (!p) continue;
+              const idx = [...p.children].indexOf(x);
+              if (idx <= 0) continue;
+              const prev = p.children[idx - 1];
+              if (!isVis(prev)) continue;
+              const target = prev.querySelector('button, a, [role=button]') || prev;
+              target.click();
+              return true;
+            }
+            return false;
+        }""")
+        if clicked:
+            return True
+    except Exception:
+        pass
     return click_text(page, ["Save", "✓", "✔"])
+
+
+def _fill_ns_input(page, inp, ns):
+    """Điền 1 NS vào ô, kiểm tra lại giá trị đã vào ô chưa; chưa thì
+    gõ lại từng ký tự như người gõ thật (ô React có thể không nhận
+    fill() 1 lần). Raise nếu điền mãi không vào."""
+    try:
+        inp.click()
+        inp.fill(ns)
+    except Exception:
+        pass
+    page.wait_for_timeout(300)
+    try:
+        if (inp.input_value() or "").strip() == ns:
+            return
+    except Exception:
+        pass
+    try:
+        inp.click()
+        inp.press_sequentially(ns, delay=30)
+    except Exception:
+        pass
+    page.wait_for_timeout(300)
+    try:
+        if (inp.input_value() or "").strip() != ns:
+            raise RuntimeError(f"ô nameserver vẫn trống/sai sau khi điền (muốn {ns})")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
 
 
 def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
@@ -1212,35 +1367,35 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
         shot(page, domain, "nc-no-customdns")
         raise RuntimeError("không tìm được Custom DNS ở mục Nameservers")
     page.wait_for_timeout(1200)
-    # Điền 2 NS vào các ô trong mục Nameservers
+    # Điền 2 NS vào các ô trong mục Nameservers.
     try:
-        ns_inputs = page.locator("input[placeholder*='nameserver' i], input[value*='ns1' i], input[value*='ns2' i]")
-        # Cách chắc hơn: lấy tất cả input text trong khu vực Nameservers, lọc ô trống/chứa ns
-        inputs = page.locator("input[type='text']")
-        count = inputs.count()
-        targets = []
-        for i in range(count):
-            try:
-                v = (inputs.nth(i).input_value() or "").strip()
-                ph = (inputs.nth(i).get_attribute("placeholder") or "").lower()
-                if "nameserver" in ph or v.endswith(".ns.cloudflare.com") or \
-                   v.startswith("ns") or (not v and "dns" in ph):
-                    targets.append(inputs.nth(i))
-            except Exception:
-                continue
+        # Ưu tiên ô có placeholder 'Nameserver 1/2' — đúng ô cần điền.
+        # (Bản cũ quét mọi input[type='text'] nên có thể trúng ô khác
+        # trong trang, điền xong mà 2 ô NS vẫn trống như ảnh user gửi.)
+        targets = page.locator("input[placeholder*='nameserver' i]").all()[:2]
+        if len(targets) < 2:
+            inputs = page.locator("input[type='text']")
+            targets = []
+            for i in range(inputs.count()):
+                try:
+                    v = (inputs.nth(i).input_value() or "").strip()
+                    ph = (inputs.nth(i).get_attribute("placeholder") or "").lower()
+                    if "nameserver" in ph or v.endswith(".ns.cloudflare.com") or \
+                       v.startswith("ns") or (not v and "dns" in ph):
+                        targets.append(inputs.nth(i))
+                except Exception:
+                    continue
+            targets = targets[:2]
         if len(targets) < 2:
             # Thử bấm "Add Nameserver" để thêm ô
             click_text(page, ["Add Nameserver"])
             page.wait_for_timeout(800)
-            # lấy lại: các ô text trống ở gần cuối form Nameservers
-            inputs = page.locator("input[type='text']")
-            targets = [inputs.nth(i) for i in range(inputs.count())
-                       if not (inputs.nth(i).input_value() or "").strip()][:2]
+            targets = page.locator("input[placeholder*='nameserver' i]").all()[:2]
         if len(targets) < 2:
             shot(page, domain, "nc-ns-inputs")
             raise RuntimeError(f"không tìm đủ 2 ô nhập nameserver (thấy {len(targets)} ô)")
-        targets[0].click(); targets[0].fill(ns_list[0])
-        targets[1].click(); targets[1].fill(ns_list[1])
+        for inp, ns in zip(targets, ns_list):
+            _fill_ns_input(page, inp, ns)
     except RuntimeError:
         raise
     except Exception as e:
@@ -1251,6 +1406,20 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
         shot(page, domain, "nc-no-save")
         raise RuntimeError("không tìm được nút lưu (dấu tick xanh) ở Namecheap")
     page.wait_for_timeout(2500)
+    # Kiểm tra lại bằng cách tải lại trang Manage: chỉ khi lưu thật thì
+    # 2 NS mới còn hiện (tải lại sẽ hiện NS đã lưu trên server, không
+    # phải giá trị vừa gõ còn nằm trong ô chưa lưu).
+    try:
+        page.goto(manage_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+        body = page.content()
+        if ns_list[0] not in body or ns_list[1] not in body:
+            shot(page, domain, "nc-save-not-verified")
+            raise RuntimeError("bấm lưu rồi nhưng tải lại trang Manage không thấy 2 NS mới — có thể chưa lưu được")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
     log("    đã lưu NS ở Namecheap.")
     return "saved"
 
