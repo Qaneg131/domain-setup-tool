@@ -423,7 +423,7 @@ def doh_ns(domain):
 
 
 # ---------------------------------------------------------------- login check
-def ensure_logged_in(page, site, start_url, logged_in_text, wait_minutes=5):
+def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
     # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
     # Thay vào đó tự kiểm tra mỗi 5 giây — user đăng nhập xong trong cửa sổ
     # Chrome vừa mở là tool tự chạy tiếp. Quá 5 phút vẫn chưa đăng nhập thì lỗi.
@@ -437,8 +437,14 @@ def ensure_logged_in(page, site, start_url, logged_in_text, wait_minutes=5):
     # đứng im chờ đủ 5 phút dù user đã đăng nhập xong. Giờ chỉ tin 2 dấu hiệu:
     # URL có phải trang login không, và có thấy dòng chữ chỉ hiện KHI ĐÃ
     # đăng nhập không (Cloudflare: "Account home" ở menu trái; Namecheap:
-    # "My Account" ở header). Chưa đăng nhập thì trang login sẽ redirect
-    # về URL chứa "login" nên vẫn bắt được.
+    # "Domain List" tiêu đề trang / nút "MANAGE" ở từng dòng domain).
+    # LƯU Ý: đừng chọn chữ nằm trong menu ẩn — "My Account" của Namecheap
+    # chỉ nằm trong menu dropdown của tên user nên trang Domain List đã
+    # đăng nhập vẫn không thấy nó, tool cứ chờ mãi dù user đã đăng nhập.
+    # Chưa đăng nhập thì trang login sẽ redirect về URL chứa "login"
+    # nên vẫn bắt được.
+    if isinstance(logged_in_texts, str):
+        logged_in_texts = [logged_in_texts]
     deadline = time.time() + wait_minutes * 60
     warned = False
     last_reminder = 0.0
@@ -449,10 +455,14 @@ def ensure_logged_in(page, site, start_url, logged_in_text, wait_minutes=5):
         if any(m in url for m in ("login", "sign-in", "signin")):
             needs_login = True
         else:
-            try:
-                needs_login = not page.get_by_text(logged_in_text).first.is_visible(timeout=2000)
-            except Exception:
-                needs_login = True
+            needs_login = True
+            for t in logged_in_texts:
+                try:
+                    if page.get_by_text(t).first.is_visible(timeout=1500):
+                        needs_login = False
+                        break
+                except Exception:
+                    continue
         if not needs_login:
             log(f"  đã đăng nhập {site} (Chrome sẵn).")
             return
@@ -1003,9 +1013,9 @@ def main():
         log("Đã nối vào Chrome, đang mở Cloudflare để kiểm tra đăng nhập...")
         try:
             ensure_logged_in(page, "Cloudflare", "https://dash.cloudflare.com/",
-                             "Account home")
+                             ["Account home", "Domains"])
             ensure_logged_in(page, "Namecheap", "https://ap.www.namecheap.com/domains/list",
-                             "My Account")
+                             ["Domain List", "MANAGE"])
             for d in domains:
                 log(f"=== {d} (phase {args.phase}) ===")
                 results.append(setup_one(page, d, args, presets, file_map))
