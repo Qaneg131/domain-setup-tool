@@ -910,6 +910,39 @@ def _find_list_search(page, timeout=15000):
     return None
 
 
+def _search_domain_in_list(page, search, domain):
+    """Gõ domain vào ô Search của Domain List rồi chờ dòng domain hiện ra.
+    Trang lọc live theo từng phím gõ (keyup + debounce) nên fill() một
+    lần rồi bấm Enter KHÔNG kích hoạt bộ lọc — đúng như ảnh user gửi:
+    ô đã có chữ mà list vẫn hiện tất cả, không lọc. Phải gõ từng ký tự
+    như người gõ thật: press_sequentially tạo đủ keydown/input/keyup
+    cho từng ký tự nên bộ lọc chạy như gõ tay. Không cần Enter vì gõ
+    xong list tự lọc; chỉ bấm Enter dự phòng nếu sau 12s vẫn chưa thấy."""
+    search.click()
+    try:
+        search.fill("")
+    except Exception:
+        pass
+    search.click()
+    search.press_sequentially(domain, delay=60)
+    # Cho list lọc xong (gõ xong là tự lọc, không cần Enter).
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        if _any_visible(page, domain):
+            return
+        page.wait_for_timeout(400)
+    # Dự phòng: thử bấm Enter rồi chờ thêm.
+    page.keyboard.press("Enter")
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if _any_visible(page, domain):
+            return
+        page.wait_for_timeout(400)
+    shot(page, domain, "nc-domain-not-found")
+    raise RuntimeError(f"không tìm thấy {domain} trong Domain List của Namecheap "
+                       "(đã search mà không ra — kiểm tra domain có ở Namecheap không)")
+
+
 def namecheap_open_manage(page, domain):
     """Mở trang Manage của domain ở Namecheap, đúng luồng user chỉ:
     ap.www.namecheap.com -> Domain List -> ô Search cạnh Filters -> gõ
@@ -934,16 +967,7 @@ def namecheap_open_manage(page, domain):
     if not search:
         shot(page, domain, "nc-list-no-search")
         raise RuntimeError("không thấy ô Search ở Domain List của Namecheap")
-    search.click()
-    search.fill(domain)
-    page.keyboard.press("Enter")
-    page.wait_for_timeout(2500)
-    try:
-        page.locator(f"text={domain}").first.wait_for(state="visible", timeout=10000)
-    except Exception:
-        shot(page, domain, "nc-domain-not-found")
-        raise RuntimeError(f"không tìm thấy {domain} trong Domain List của Namecheap "
-                           "(đã search mà không ra — kiểm tra domain có ở Namecheap không)")
+    _search_domain_in_list(page, search, domain)
     # Sau khi search chỉ còn dòng domain đó (các dòng khác đã lọc hết),
     # nút MANAGE đầu tiên HIỂN THỊ chính là của nó (không lấy .first vì
     # .first có thể trúng nút MANAGE đang ẩn trong menu khác — cùng lỗi
