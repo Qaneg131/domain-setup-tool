@@ -637,7 +637,11 @@ def main():
             log("Chrome chưa bật cổng debug — tool sẽ tự mở Chrome bằng profile thật của bạn.")
             log("Nếu báo lỗi 'profile đang được dùng', hãy ĐÓNG hết cửa sổ Chrome rồi chạy lại.")
             try:
+                # chromium_sandbox=True: Playwright mặc định tắt sandbox của Chrome
+                # (--no-sandbox) nên Chrome hiện cảnh báo "cờ dòng lệnh không được
+                # hỗ trợ". Bật sandbox lại thì hết cảnh báo, Chrome chạy như bình thường.
                 kwargs = dict(user_data_dir=profile, headless=False,
+                              chromium_sandbox=True,
                               args=["--no-first-run", "--disable-blink-features=AutomationControlled"],
                               viewport={"width": 1280, "height": 900},
                               ignore_https_errors=True)
