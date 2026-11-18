@@ -7,10 +7,14 @@ Cách nó chạy:
   1. Tool nối vào Chrome đang mở ở máy bạn (đã đăng nhập sẵn Cloudflare
      + Namecheap), qua cổng remote-debugging 9222 — nếu bạn chạy
      start-chrome.bat/.sh trước.
-     - Nếu không, tool TỰ COPY profile Chrome sang thư mục tạm rồi mở
-       Chrome từ bản copy đó (vẫn đăng nhập sẵn, vì cookie mã hoá theo
-       tài khoản Windows của chính máy đó). Chrome thật của bạn cứ mở
-       bình thường, KHÔNG cần đóng gì hết. Chạy xong bản copy được xoá.
+     - Nếu không, tool TỰ COPY profile Chrome sang thư mục RIÊNG CỦA TOOL
+       (chrome-profile-tool/) rồi mở Chrome từ đó (vẫn đăng nhập sẵn, vì
+       cookie mã hoá theo tài khoản Windows của chính máy đó). Chrome thật
+       của bạn cứ mở bình thường, KHÔNG cần đóng gì hết. Thư mục này được
+       GIỮ LẠI giữa các lần chạy nên cookie đăng nhập còn nguyên: đăng
+       nhập 1 lần trong Chrome của tool, lần sau mở lên vẫn đăng nhập sẵn,
+       không phải đăng nhập lại. Muốn đăng xuất hết thì xoá thư mục đó
+       (nút "Reset profile tool" trong app, hoặc --reset-profile).
   2. Tool tự click thay bạn, y như bạn làm tay (tab làm việc mở riêng và
      đưa lên trước để bạn xem trực tiếp):
      Phase 1: Cloudflare Add site (Free) -> lấy 2 nameserver
@@ -173,7 +177,7 @@ def prepare_login_chrome(args, profile, profile_dir_name, chrome_exe):
     if not chrome_exe or not Path(chrome_exe).exists():
         log("Không tìm thấy chrome.exe — hãy chạy start-chrome.bat trước rồi bấm nút 1 lại.")
         return 2
-    profile_copy = prepare_profile_copy(profile, profile_dir_name)
+    profile_copy = get_tool_profile_dir(profile, profile_dir_name, fresh=args.fresh_profile)
     use_dir = profile_copy or profile
     if not profile_copy:
         log("  (Không copy được profile — Chrome sẽ mở bằng profile thật,")
@@ -288,17 +292,54 @@ def cleanup_stale_copies(max_age_hours=24):
         pass
 
 
-def prepare_profile_copy(profile_root, profile_name="Default"):
-    """Copy 1 hồ sơ Chrome thật -> thư mục tạm, đặt thành Default trong bản
-    copy để Chrome mở lên dùng đúng hồ sơ đó. Trả về đường dẫn bản copy,
-    hoặc None nếu không copy được (sẽ dùng profile thật như cũ).
-    profile_name là tên thư mục hồ sơ, vd 'Default' hay 'Profile 1'."""
+# Thư mục profile RIÊNG CỦA TOOL, giữ lâu dài để cookie đăng nhập còn
+# nguyên giữa các lần chạy (xem get_tool_profile_dir). Chứa session cookie
+# nên TUYỆT ĐỐI không commit lên git — đã thêm vào .gitignore.
+TOOL_PROFILE_ROOT = BASE_DIR / "chrome-profile-tool"
+
+
+def tool_profile_dir(profile_name="Default"):
+    """Đường dẫn thư mục profile tool của 1 hồ sơ Chrome (vd 'Profile 1')."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", profile_name or "Default").strip("._") or "Default"
+    return TOOL_PROFILE_ROOT / safe
+
+
+def get_tool_profile_dir(profile_root, profile_name="Default", fresh=False):
+    """Trả về thư mục profile tool để mở Chrome từ đó.
+    - Lần đầu (chưa có thư mục): copy từ hồ sơ Chrome thật như trước.
+    - Các lần sau: DÙNG LẠI y nguyên, KHÔNG copy đè — copy đè sẽ xoá mất
+      cookie đăng nhập trong Chrome của tool, làm user phải đăng nhập lại
+      mỗi lần chạy (đúng cái user than phiền).
+    - fresh=True: xoá rồi copy lại từ đầu (đăng xuất hết / làm mới)."""
+    dest = tool_profile_dir(profile_name)
+    if fresh:
+        shutil.rmtree(dest, ignore_errors=True)
+    if (dest / "Local State").exists() or (dest / "Default").exists():
+        log(f"Dùng lại profile tool đã lưu: {dest} (cookie đăng nhập còn nguyên).")
+        return str(dest)
+    copied = prepare_profile_copy(profile_root, profile_name, dest_dir=str(dest))
+    if copied:
+        log("  Lần đầu: đã copy hồ sơ Chrome sang profile tool — đăng nhập")
+        log("  1 lần trong Chrome của tool, các lần sau mở lên vẫn còn.")
+    return copied
+
+
+def prepare_profile_copy(profile_root, profile_name="Default", dest_dir=None):
+    """Copy 1 hồ sơ Chrome thật -> dest_dir (mặc định: thư mục tạm), đặt
+    thành Default trong bản copy để Chrome mở lên dùng đúng hồ sơ đó.
+    Trả về đường dẫn bản copy, hoặc None nếu không copy được (sẽ dùng
+    profile thật như cũ). profile_name là tên thư mục hồ sơ, vd 'Default'
+    hay 'Profile 1'."""
     src = Path(profile_root)
     if not src.exists():
         log(f"  Không thấy profile Chrome ở {src}")
         return None
-    cleanup_stale_copies()
-    dst = Path(tempfile.mkdtemp(prefix="domain-chrome-profile-"))
+    if dest_dir is None:
+        cleanup_stale_copies()
+        dst = Path(tempfile.mkdtemp(prefix="domain-chrome-profile-"))
+    else:
+        dst = Path(dest_dir)
+        dst.mkdir(parents=True, exist_ok=True)
     copied = [0]
     skipped = []
 
@@ -344,7 +385,7 @@ def prepare_profile_copy(profile_root, profile_name="Default"):
             ls_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
-    log(f"  Đã copy hồ sơ Chrome '{profile_name}' sang thư mục tạm ({copied[0]} file)"
+    log(f"  Đã copy hồ sơ Chrome '{profile_name}' sang {dst} ({copied[0]} file)"
         + (f", bỏ qua {len(skipped)} file đang khoá" if skipped else "")
         + " — Chrome thật của bạn vẫn mở bình thường, không cần đóng.")
     return str(dst)
@@ -964,6 +1005,10 @@ def main():
     ap.add_argument("--only-cloudflare", action="store_true")
     ap.add_argument("--only-namecheap", action="store_true")
     ap.add_argument("--keep-open", action="store_true", help="Chạy xong không đóng Chrome")
+    ap.add_argument("--fresh-profile", action="store_true",
+                    help="Xoá profile tool rồi copy lại từ đầu (đăng xuất hết / làm mới)")
+    ap.add_argument("--reset-profile", action="store_true",
+                    help="Chỉ xoá profile tool đã lưu (đăng xuất hết) rồi thoát, không chạy gì")
     ap.add_argument("--prepare", action="store_true",
                     help="Nút 1: chỉ mở Chrome với 2 tab đăng nhập Cloudflare + Namecheap rồi dừng")
     args = ap.parse_args()
@@ -981,6 +1026,15 @@ def main():
     else:
         profile_dir_name = "Default"
     log(f"Domain Setup tool — bản {tool_version()} (kiểm tra mã này khớp với bản mới nhất trên git chưa)")
+    if args.reset_profile:
+        dest = tool_profile_dir(profile_dir_name)
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+            log(f"Đã xoá profile tool: {dest} (đăng xuất hết).")
+            log("Chạy lại lần sau tool sẽ copy mới từ hồ sơ Chrome thật.")
+        else:
+            log(f"Chưa có profile tool nào để xoá ({dest}).")
+        sys.exit(0)
     if args.prepare:
         sys.exit(prepare_login_chrome(args, profile, profile_dir_name, chrome_exe))
 
@@ -1028,10 +1082,12 @@ def main():
             if chrome_already_running():
                 log("Chrome của bạn đang mở sẵn — không sao, tool dùng bản copy")
                 log("profile nên không cần đóng Chrome.")
-            profile_copy = prepare_profile_copy(profile, profile_dir_name)
+            # Profile tool được GIỮ LẠI giữa các lần chạy để cookie đăng nhập
+            # còn nguyên — đăng nhập 1 lần, lần sau mở lên vẫn còn.
+            profile_copy = get_tool_profile_dir(profile, profile_dir_name, fresh=args.fresh_profile)
             use_dir = profile_copy or profile
             if profile_copy:
-                log("Chrome chưa bật cổng debug — tool sẽ mở Chrome từ bản copy profile.")
+                log("Chrome chưa bật cổng debug — tool sẽ mở Chrome từ profile tool đã lưu.")
             else:
                 log("Không copy được profile — thử mở Chrome bằng profile thật.")
                 log("(Nếu báo 'profile đang được dùng', hãy đóng hết Chrome rồi chạy lại.)")
@@ -1059,7 +1115,12 @@ def main():
                 context = p.chromium.launch_persistent_context(**kwargs)
             except Exception as e:
                 log(f"LỖI mở Chrome: {e}")
-                log("Cách sửa: chạy start-chrome.bat/.sh trước, rồi chạy tool.")
+                if "already in use" in str(e) or "đang được dùng" in str(e):
+                    log("Profile tool đang bị 1 cửa sổ Chrome của tool giữ (lần chạy")
+                    log("trước chưa đóng) — đóng cửa sổ Chrome đó rồi chạy lại.")
+                    log("Nếu vẫn kẹt: --reset-profile để xoá profile tool rồi chạy lại.")
+                else:
+                    log("Cách sửa: chạy start-chrome.bat/.sh trước, rồi chạy tool.")
                 sys.exit(2)
         # Tab làm việc: mở tab mới RIÊNG cho tool và đưa lên trước để user
         # xem trực tiếp từng bước. Không chiếm tab web UI hay tab khác của user,
@@ -1101,9 +1162,8 @@ def main():
                     context.close()
                 except Exception:
                     pass
-                # Xoá bản copy profile tạm (Chrome đã đóng nên xoá được).
-                if profile_copy:
-                    shutil.rmtree(profile_copy, ignore_errors=True)
+                # KHÔNG xoá profile tool nữa — giữ lại để cookie đăng nhập
+                # còn nguyên cho lần chạy sau (đăng nhập 1 lần là đủ).
             elif cdp_mode:
                 try:
                     browser.close()  # chỉ ngắt kết nối, không đóng Chrome của bạn

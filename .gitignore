@@ -2,5 +2,7 @@
 .env
 # Báo cáo chạy, chứa zone id / nameserver
 reports/
+# Profile riêng của tool — chứa session cookie đăng nhập, TUYỆT ĐỐI không commit
+chrome-profile-tool/
 __pycache__/
 *.pyc

@@ -32,13 +32,22 @@ trong app. Không cần mở web, không cần đóng Chrome:
 - **Nút 2 "Chạy tiếp":** sau khi đăng nhập xong cả 2 tab, bấm để tool
   nối vào Chrome đó và chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
   Bấm luôn nút 2 không qua nút 1 cũng được — tool tự mở Chrome như cũ.
-- App tự copy profile Chrome sang thư mục tạm rồi mở Chrome từ bản copy
-  đó. Cookie Chrome mã hoá gắn với tài khoản Windows của chính máy đó,
-  nên bản copy mở lên vẫn đăng nhập sẵn như Chrome thật. Chrome thật của
-  bạn cứ mở bình thường. Chạy xong Chrome vẫn mở để bạn kiểm tra lại.
+- **Chỉ đăng nhập 1 lần:** app copy profile Chrome sang thư mục riêng
+  của tool (`chrome-profile-tool/`, mỗi hồ sơ Chrome 1 thư mục con) rồi mở
+  Chrome từ đó. Cookie Chrome mã hoá gắn với tài khoản Windows của chính
+  máy đó, nên lần đầu mở lên vẫn đăng nhập sẵn như Chrome thật — và thư
+  mục này được GIỮ LẠI giữa các lần chạy, nên đăng nhập 1 lần trong
+  Chrome của tool là các lần sau mở lên vẫn còn, không phải đăng nhập lại.
+  Chrome thật của bạn cứ mở bình thường. Chạy xong Chrome vẫn mở để bạn
+  kiểm tra lại. (Thư mục này chứa session cookie nên đã thêm vào
+  `.gitignore` — không bao giờ commit lên git, cũng đừng gửi cho ai.)
 - Nếu bản copy không mang được đăng nhập, cứ đăng nhập trong cửa sổ
   Chrome đó — đăng nhập xong là tool tự chạy tiếp, không cần bấm gì.
   Quá 5 phút chưa đăng nhập thì tool báo lỗi.
+- **Phiên đăng nhập hết hạn / kẹt ở trang đăng nhập:** bấm nút
+  **"Reset profile tool"** để xoá hẳn profile đã lưu (đăng xuất hết),
+  rồi chạy lại — tool sẽ copy mới từ hồ sơ Chrome thật. Hoặc chạy
+  `python chrome_setup.py --reset-profile`.
 - Tab làm việc mở riêng và đưa lên trước để bạn xem trực tiếp từng bước.
 - **Chrome mở lên chỉ toàn tab trắng, không chạy gì:** xem log trong app —
   tool giờ in ra số tab đang mở và thử mở lại trang 1 lần rồi mới báo lỗi rõ.

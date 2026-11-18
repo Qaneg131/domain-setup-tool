@@ -12,7 +12,12 @@ KHÔNG cần mở web http://127.0.0.1:8000, không cần đóng Chrome.
 - Nút 2 "Chạy tiếp": sau khi đăng nhập xong cả 2, bấm để tool nối vào
   Chrome đó và chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
 - Chạy xong Chrome vẫn mở để bạn kiểm tra lại, kết quả hiện trong bảng
-  bên dưới, log đầy đủ ở ô cuối. Bản copy profile tạm được xoá sau 1 ngày.
+  bên dưới, log đầy đủ ở ô cuối.
+- Đăng nhập CHỈ CẦN 1 LẦN: tool giữ profile riêng (thư mục
+  chrome-profile-tool/) nên cookie đăng nhập còn nguyên giữa các lần chạy.
+  Lần sau mở app bấm nút 2 là chạy luôn, không cần nút 1 nữa — trừ khi
+  phiên đăng nhập hết hạn, lúc đó đăng nhập lại 1 lần trong Chrome của tool.
+  Nút "Reset profile tool" để xoá hẳn profile đã lưu (đăng xuất hết).
 """
 import csv
 import glob
@@ -37,10 +42,11 @@ except Exception:
 # Đọc danh sách hồ sơ Chrome để user chọn đúng hồ sơ đã đăng nhập.
 try:
     sys.path.insert(0, str(BASE_DIR))
-    from chrome_setup import default_profile_dir, list_chrome_profiles
+    from chrome_setup import default_profile_dir, list_chrome_profiles, tool_profile_dir
     _PROFILES, _LAST_USED = list_chrome_profiles(default_profile_dir())
 except Exception:
     _PROFILES, _LAST_USED = [], None
+    tool_profile_dir = None
 
 
 class App(tk.Tk):
@@ -84,12 +90,18 @@ class App(tk.Tk):
         ttk.Label(self, text="Chọn đúng hồ sơ bạn hay dùng để đăng nhập Cloudflare / Namecheap. "
                   "Sai hồ sơ thì Chrome mở lên sẽ không đăng nhập sẵn.",
                   wraplength=740, foreground="#666").pack(padx=12, anchor="w")
+        self.profile_note = ttk.Label(self, text="", wraplength=740, foreground="#a06a35")
+        self.profile_note.pack(padx=12, anchor="w")
+        self.profile_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_profile_note())
+        self.refresh_profile_note()
 
         row = ttk.Frame(self)
         row.pack(padx=12, pady=8, fill="x")
         self.dry_run = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Dry-run (xem trước, không đổi gì thật)",
                         variable=self.dry_run).pack(side="left")
+        self.reset_btn = ttk.Button(row, text="Reset profile tool", command=self.on_reset)
+        self.reset_btn.pack(side="left", padx=(10, 0))
         self.prepare_btn = ttk.Button(row, text="1. Mở tab đăng nhập", command=self.on_prepare)
         self.prepare_btn.pack(side="right", padx=(6, 0))
         self.run_btn = ttk.Button(row, text="2. Chạy tiếp", command=self.on_run)
@@ -136,16 +148,46 @@ class App(tk.Tk):
         chosen = self.profile_map.get(self.profile_box.get())
         return ["--profile-dir", chosen] if chosen else []
 
+    def refresh_profile_note(self):
+        """Cho biết hồ sơ đang chọn đã có đăng nhập lưu sẵn trong profile
+        tool chưa — có rồi thì lần sau bấm nút 2 là chạy luôn."""
+        if tool_profile_dir is None:
+            return
+        chosen = self.profile_map.get(self.profile_box.get())
+        if not chosen:
+            self.profile_note.configure(text="")
+            return
+        d = tool_profile_dir(chosen)
+        if (d / "Local State").exists() or (d / "Default").exists():
+            self.profile_note.configure(
+                text="✓ Hồ sơ này đã lưu đăng nhập trong tool — lần sau bấm nút 2 là chạy luôn, không cần đăng nhập lại.")
+        else:
+            self.profile_note.configure(
+                text="Chưa lưu đăng nhập cho hồ sơ này — đăng nhập 1 lần ở bước 1, các lần sau không cần nữa.")
+
     def _start(self, cmd, mode, status_text):
         self.current_mode = mode
         self.prepare_btn.configure(state="disabled")
         self.run_btn.configure(state="disabled")
+        self.reset_btn.configure(state="disabled")
         self.status.configure(text=status_text)
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
         self.thread = threading.Thread(target=self.run_worker, args=(cmd,), daemon=True)
         self.thread.start()
+
+    def on_reset(self):
+        # Xoá profile tool đã lưu (đăng xuất hết) — dùng khi phiên đăng nhập
+        # lưu sẵn bị hỏng/hết hạn mà tool cứ kẹt ở trang đăng nhập.
+        if not messagebox.askyesno("Reset profile tool",
+                                   "Xoá hẳn đăng nhập đã lưu trong tool?\n"
+                                   "Lần chạy sau sẽ copy mới từ hồ sơ Chrome thật "
+                                   "và có thể phải đăng nhập lại 1 lần."):
+            return
+        cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"), "--reset-profile"]
+        cmd += self._profile_args()
+        self._start(cmd, "reset", "Đang xoá profile tool đã lưu...")
 
     def on_prepare(self):
         # Nút 1: chỉ mở Chrome với 2 tab đăng nhập rồi dừng — không chạm
@@ -195,7 +237,17 @@ class App(tk.Tk):
 
     def on_done(self, result):
         rc, csv_path = result
-        if getattr(self, "current_mode", "run") == "prepare":
+        mode = getattr(self, "current_mode", "run")
+        if mode == "reset":
+            self.status.configure(text="Đã xoá profile tool — lần chạy sau sẽ copy mới "
+                                       "từ hồ sơ Chrome thật." if rc == 0
+                                  else "Xoá profile tool lỗi — xem log bên dưới.")
+            self.prepare_btn.configure(state="normal")
+            self.run_btn.configure(state="normal")
+            self.reset_btn.configure(state="normal")
+            self.refresh_profile_note()
+            return
+        if mode == "prepare":
             if rc == 0:
                 self.status.configure(text="Đã mở Chrome — đăng nhập xong Cloudflare + "
                                            "Namecheap rồi bấm nút 2 (Chạy tiếp).")
@@ -203,6 +255,8 @@ class App(tk.Tk):
                 self.status.configure(text="Mở tab đăng nhập lỗi — xem log bên dưới.")
             self.prepare_btn.configure(state="normal")
             self.run_btn.configure(state="normal")
+            self.reset_btn.configure(state="normal")
+            self.refresh_profile_note()
             return
         ok_n = 0
         total = 0
@@ -228,6 +282,8 @@ class App(tk.Tk):
             self.status.configure(text="Chạy lỗi — xem log bên dưới.")
         self.prepare_btn.configure(state="normal")
         self.run_btn.configure(state="normal")
+        self.reset_btn.configure(state="normal")
+        self.refresh_profile_note()
 
     def on_close(self):
         if self.proc is not None:
