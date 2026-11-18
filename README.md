@@ -30,12 +30,16 @@ Trong web (không còn mục key nữa, chỉ còn Giai đoạn 1):
   (đã đăng nhập sẵn) và tự click. Bạn không cần thao tác gì, chỉ ngồi xem.
   Chạy xong Chrome vẫn mở để bạn kiểm tra lại.
 
-**Nếu tool báo "profile đang được dùng":** đóng hết cửa sổ Chrome rồi bấm
-Chạy lại — tool sẽ tự mở Chrome đã đăng nhập. Hoặc làm cách này 1 lần:
-- Windows: đóng Chrome → double-click `start-chrome.bat`
-- Mac/Linux: đóng Chrome → `bash start-chrome.sh`
-- Rồi để Chrome đó mở, chạy tool — tool nối vào Chrome đang mở, không cần
-  đóng/mở lại nữa.
+**Cách chạy (chọn 1 trong 2 — đừng vừa mở web bằng Chrome vừa bắt đóng Chrome):**
+- **Cách 1 (khuyên dùng):** đóng Chrome → double-click `start-chrome.bat`
+  (Mac/Linux: `bash start-chrome.sh`) → Chrome mở lại, vẫn đăng nhập sẵn.
+  Mở web `http://127.0.0.1:8000` trong Chrome đó, dán domain, bấm Chạy —
+  tool nối vào Chrome đang mở và tự làm, bạn xem trực tiếp luôn.
+- **Cách 2:** mở web bằng Edge (Windows có sẵn), đóng hẳn Chrome, bấm Chạy
+  trong Edge — tool tự mở Chrome làm việc.
+- Lưu ý: nếu Chrome thường đang mở sẵn mà không bật cổng debug, tool sẽ
+  báo dừng lại — vì profile bị khóa, tool chỉ mở được 1 cửa sổ about:blank
+  trắng rồi đứng im.
 
 Nếu phiên đăng nhập hết hạn (Cloudflare/Namecheap bắt đăng nhập lại),
 tool sẽ dừng và nhắn trong cửa sổ terminal: bạn đăng nhập ngay trong cửa
