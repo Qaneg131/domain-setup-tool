@@ -61,6 +61,9 @@ table{width:100%;border-collapse:collapse} td,th{padding:6px;border:1px solid #d
 td input,td select{width:100%} .row-proxied{width:60px;text-align:center}
 .note{background:#f5f2ed;padding:12px;border-radius:6px} .small{color:#666;font-size:13px}
 pre{background:#16130f;color:#f5f2ed;padding:12px;border-radius:6px;white-space:pre-wrap}
+.ok{color:#1a7a3a;font-weight:700} .fail{color:#c0392b;font-weight:700}
+#ket-qua{margin-top:8px} #run-btn:disabled{opacity:.6;cursor:wait}
+.chay{color:#a06a35;font-weight:700}
 </style></head><body>
 <h1>Domain Setup — Namecheap → Cloudflare</h1>
 <p class="note"><b>Chạy bằng Chrome đã đăng nhập — không cần key/token gì hết.</b>
@@ -71,7 +74,7 @@ pre{background:#16130f;color:#f5f2ed;padding:12px;border-radius:6px;white-space:
 và tự click thay bạn. Bạn không cần thao tác gì, chỉ ngồi xem.
 Nếu báo "profile đang được dùng" thì đóng hết Chrome rồi bấm Chạy lại.</p>
 
-<form method="post" action="/run">
+<form method="post" action="/run" id="setup-form">
 <h2>1. Giai đoạn 1 — Full domain (mỗi dòng 1 domain)</h2>
 <textarea name="domains" rows="8" placeholder="example.com&#10;shop-example.com&#10;landing-example.com"></textarea>
 <p>
@@ -95,12 +98,65 @@ Nếu báo "profile đang được dùng" thì đóng hết Chrome rồi bấm C
 </table>
 <p><button type="button" class="ghost" onclick="addRow()">+ Thêm 1 ô record</button></p>
 
-<p><button type="submit">Chạy bằng Chrome</button>
+<p><button type="submit" id="run-btn">Chạy bằng Chrome</button>
 <button type="button" class="secondary" onclick="window.open('https://dash.cloudflare.com','_blank')">Mở Cloudflare</button>
 <button type="button" class="secondary" onclick="window.open('https://www.namecheap.com/myaccount/','_blank')">Mở Namecheap</button></p>
 <p class="small">Tool không lưu mật khẩu, không lấy key. Nó chỉ điều khiển Chrome ở máy bạn,
 dùng phiên đăng nhập sẵn có. Chạy xong Chrome vẫn mở để bạn kiểm tra lại.</p>
 </form>
+
+<div id="ket-qua" style="display:none">
+<h2>Kết quả</h2>
+<p id="kq-tomtat" class="note"></p>
+<table><thead><tr><th>Domain</th><th>Status</th><th>Nameservers</th><th>Records</th><th>Lỗi</th></tr></thead>
+<tbody id="kq-bang"></tbody></table>
+<h3>Log</h3>
+<pre id="kq-log"></pre>
+<p class="small">Zone mới thường ở trạng thái pending tới khi NS propagate (5 phút – 24h).
+Nếu 1 domain lỗi vì giao diện đổi nút, tool đã chụp màn hình vào thư mục reports/ — mở ảnh đó lên là biết nó kẹt ở đâu.</p>
+</div>
+<script>
+document.getElementById('setup-form').addEventListener('submit', async function(ev){
+  ev.preventDefault();
+  const box = document.getElementById('ket-qua');
+  const tomtat = document.getElementById('kq-tomtat');
+  const bang = document.getElementById('kq-bang');
+  const logEl = document.getElementById('kq-log');
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true; btn.textContent = 'Đang chạy bằng Chrome...';
+  box.style.display = 'block';
+  tomtat.innerHTML = '<span class="chay">Đang chạy bằng Chrome, đừng đóng trang này... (nhìn qua cửa sổ Chrome để xem tool click)</span>';
+  bang.innerHTML = ''; logEl.textContent = '';
+  box.scrollIntoView({behavior:'smooth', block:'start'});
+  try {
+    const res = await fetch('/run', {method:'POST', body:new FormData(ev.target)});
+    const data = await res.json();
+    const okN = (data.rows||[]).filter(r => r.status && r.status !== 'failed').length;
+    tomtat.textContent = data.error
+      ? 'Lỗi: ' + data.error
+      : `Xong: ${okN}/${data.domains} domain OK — Phase ${data.phase}${data.dry_run ? ' (dry-run)' : ''}, ${data.records} record đã nhập. Chrome vẫn mở để bạn kiểm tra lại.`;
+    if (!data.rows || !data.rows.length) {
+      bang.innerHTML = '<tr><td colspan="5">Chưa có báo cáo CSV — xem log bên dưới (có thể Chrome chưa mở được, xem mục \u201cprofile đang được dùng\u201d).</td></tr>';
+    } else {
+      bang.innerHTML = '';
+      data.rows.forEach(function(r){
+        const tr = document.createElement('tr');
+        [['domain'],['status'],['nameservers'],['records'],['error']].forEach(function(k){
+          const td = document.createElement('td');
+          td.textContent = r[k[0]] || '';
+          if (k[0] === 'status') td.className = (r.status === 'failed') ? 'fail' : 'ok';
+          tr.appendChild(td);
+        });
+        bang.appendChild(tr);
+      });
+    }
+    logEl.textContent = data.log || '';
+  } catch (e) {
+    tomtat.textContent = 'Lỗi kết nối tới web nội bộ: ' + e + ' — kiểm tra cửa sổ terminal chạy web còn mở không.';
+  }
+  btn.disabled = false; btn.textContent = 'Chạy bằng Chrome';
+});
+</script>
 <script>
 let n=3;
 function addRow(){const t=document.getElementById('records');const r=t.insertRow();
@@ -129,6 +185,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_json(self, obj, code=200):
+        # Kết quả trả về dạng JSON để trang chính hiện ngay tại chỗ, không nhảy trang.
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(HTML)
@@ -150,7 +215,9 @@ class Handler(BaseHTTPRequestHandler):
         phase = get("phase", "1")
         dry_run = "dry_run" in form
         if not domains:
-            self._send("<h1>Thiếu domain</h1><p>Dán domain vào ô Giai đoạn 1, mỗi dòng 1 domain.</p><p><a href='/'>Quay lại</a></p>")
+            self._send_json({"ok": False, "error": "Thiếu domain — dán domain vào ô Giai đoạn 1, mỗi dòng 1 domain.",
+                             "phase": phase, "dry_run": dry_run, "domains": 0, "records": 0,
+                             "rows": [], "log": ""})
             return
 
         # 3 ô record: ô nào trống content thì bỏ qua
@@ -193,31 +260,22 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             log_text = f"LỖI chạy chrome_setup.py: {e}"
 
-        # Đọc báo cáo CSV mới nhất (nếu có)
-        rows_html = ""
+        # Đọc báo cáo CSV mới nhất (nếu có) -> trả JSON, trang chính tự vẽ bảng tại chỗ.
+        rows = []
         after = sorted(set(glob.glob(str(BASE_DIR / "reports" / "chrome_setup_*.csv"))) - before)
         csv_path = after[-1] if after else None
         if csv_path:
             try:
                 with open(csv_path, encoding="utf-8") as f:
                     for r in csv.DictReader(f):
-                        rows_html += (f"<tr><td>{r.get('domain')}</td><td>{r.get('status')}</td>"
-                                      f"<td>{r.get('nameservers','')}</td><td>{r.get('records','')}</td>"
-                                      f"<td>{r.get('error','')}</td></tr>")
+                        rows.append({"domain": r.get("domain", ""), "status": r.get("status", ""),
+                                     "nameservers": r.get("nameservers", ""), "records": r.get("records", ""),
+                                     "error": r.get("error", "")})
             except Exception:
                 pass
-        if not rows_html:
-            rows_html = "<tr><td colspan='5'>Chưa có báo cáo CSV — xem log bên dưới (có thể Chrome chưa mở được, xem mục 'profile đang được dùng').</td></tr>"
-
-        # Escape log để hiển thị an toàn
-        esc = (log_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        self._send(f"""<h1>Kết quả — Phase {phase} {'(dry-run)' if dry_run else ''} — chạy bằng Chrome</h1>
-<p>{len(domains)} domain, {len(records)} record đã nhập (ô trống đã bỏ qua). Chrome vẫn mở để bạn kiểm tra lại.</p>
-<table><tr><th>Domain</th><th>Status</th><th>Nameservers</th><th>Records</th><th>Lỗi</th></tr>{rows_html}</table>
-<h2>Log</h2><pre>{esc}</pre>
-<p><a href="/">← Quay lại form</a></p>
-<p class="small">Zone mới thường ở trạng thái pending tới khi NS propagate (5 phút – 24h).
-Nếu 1 domain lỗi vì giao diện đổi nút, tool đã chụp màn hình vào thư mục reports/ — mở ảnh đó lên là biết nó kẹt ở đâu.</p>""")
+        self._send_json({"ok": True, "error": "", "phase": phase, "dry_run": dry_run,
+                         "domains": len(domains), "records": len(records),
+                         "rows": rows, "log": log_text})
 
 
 if __name__ == "__main__":
