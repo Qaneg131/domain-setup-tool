@@ -148,9 +148,13 @@ def chrome_already_running():
 # Cookie Chrome mã hoá gắn với tài khoản Windows của chính máy đó, nên bản
 # copy mở lên vẫn đăng nhập sẵn Cloudflare + Namecheap như Chrome thật.
 # Chrome thật của user cứ mở bình thường, không cần đóng gì hết.
+# Lưu ý: KHÔNG loại thư mục "Sessions" — phiên đăng nhập của Cloudflare
+# là session cookie, Chrome khôi phục nó từ file trong Sessions. Lần trước
+# loại thư mục này nên bản copy mở lên bắt đăng nhập lại dù Chrome thật
+# đã đăng nhập sẵn (email thì nhớ, vì email lưu bằng cookie thường).
 COPY_SKIP_DIRS = {"Cache", "Code Cache", "GPUCache", "Service Worker",
                   "File System", "blob_storage", "Crashpad", "ShaderCache",
-                  "DawnCache", "GraphiteDawnCache", "Sessions",
+                  "DawnCache", "GraphiteDawnCache",
                   "optimization_guide_model_store", "DownloadService"}
 COPY_SKIP_FILES = {"SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK"}
 
@@ -826,6 +830,12 @@ def main():
                 # cũng báo cờ đó không được hỗ trợ.)
                 kwargs = dict(user_data_dir=use_dir, headless=False,
                               chromium_sandbox=True,
+                              # Bỏ cờ --enable-automation mặc định của Playwright:
+                              # cờ đó làm Chrome hiện "đang bị điều khiển tự động" và
+                              # Cloudflare nhận ra trình duyệt tự động nên bắt đăng
+                              # nhập lại + xác minh danh tính. Bỏ nó thì bản copy
+                              # giống Chrome thường hơn, phiên đăng nhập dễ giữ được.
+                              ignore_default_args=["--enable-automation"],
                               args=["--no-first-run"],
                               viewport={"width": 1280, "height": 900},
                               ignore_https_errors=True)
