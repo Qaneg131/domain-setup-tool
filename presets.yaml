@@ -1,0 +1,33 @@
+# Preset DNS — sửa content cho đúng shop/server của bạn rồi chạy lại.
+# name "@" = domain gốc. ttl 1 = Auto ở Cloudflare. proxied true chỉ dùng cho A/AAAA/CNAME web.
+presets:
+  only-ns:
+    description: "Chỉ đổi NS sang Cloudflare, không tạo record nào."
+    records: []
+
+  shopify:
+    description: "Shopify"
+    records:
+      - {type: A, name: "@", content: "23.227.38.65", proxied: true, ttl: 1}
+      # Sửa shops.myshopify.com thành domain .myshopify.com thật của shop bạn
+      - {type: CNAME, name: "www", content: "shops.myshopify.com", proxied: true, ttl: 1}
+
+  vps:
+    description: "VPS / server riêng, dùng --target-ip"
+    records:
+      - {type: A, name: "@", content: "{target_ip}", proxied: true, ttl: 1}
+      - {type: A, name: "www", content: "{target_ip}", proxied: true, ttl: 1}
+
+  vercel:
+    description: "Vercel"
+    records:
+      - {type: A, name: "@", content: "76.76.21.21", proxied: false, ttl: 1}
+      - {type: CNAME, name: "www", content: "cname.vercel-dns.com", proxied: false, ttl: 1}
+
+  # Ví dụ thêm mail (Google Workspace) — bỏ comment khi cần:
+  # google-mail:
+  #   description: "Google Workspace mail"
+  #   records:
+  #     - {type: MX, name: "@", content: "aspmx.l.google.com", priority: 1, ttl: 1}
+  #     - {type: MX, name: "@", content: "alt1.aspmx.l.google.com", priority: 5, ttl: 1}
+  #     - {type: TXT, name: "@", content: "v=spf1 include:_spf.google.com ~all", ttl: 1}

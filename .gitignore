@@ -1,0 +1,6 @@
+# Key thật — KHÔNG commit lên git
+.env
+# Báo cáo chạy, chứa zone id / nameserver
+reports/
+__pycache__/
+*.pyc
