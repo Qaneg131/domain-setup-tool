@@ -38,6 +38,14 @@ from urllib.parse import parse_qs
 BASE_DIR = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", "8000"))
 
+# Windows: console mặc định dùng cp1258, không in/đọc được vài chữ tiếng Việt
+# (vd chữ "ổ") -> ép sang UTF-8 để log của chrome_setup.py không bị vỡ.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HTML = """<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Domain Setup — Chrome đã đăng nhập (nội bộ)</title>
@@ -173,8 +181,11 @@ class Handler(BaseHTTPRequestHandler):
 
         before = set(glob.glob(str(BASE_DIR / "reports" / "chrome_setup_*.csv")))
         try:
+            env = dict(os.environ)
+            env["PYTHONUTF8"] = "1"  # bắt chrome_setup.py con in log bằng UTF-8
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
-                                  cwd=str(BASE_DIR))
+                                  cwd=str(BASE_DIR), env=env,
+                                  encoding="utf-8", errors="replace")
             log_text = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
         except subprocess.TimeoutExpired:
             log_text = "Hết thời gian chờ (30 phút). Chrome có thể vẫn đang chạy — kiểm tra lại trong Chrome."

@@ -44,6 +44,14 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
+# Windows: console mặc định dùng cp1258, không in được vài chữ tiếng Việt
+# (vd chữ "ổ") -> ép stdout/stderr sang UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 try:
     import requests
 except ImportError:

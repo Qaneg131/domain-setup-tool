@@ -44,6 +44,14 @@ from pathlib import Path
 
 import requests
 
+# Windows: console mặc định dùng cp1258, không in được vài chữ tiếng Việt
+# (vd chữ "ổ" trong "không đổi gì thật") -> ép stdout/stderr sang UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
@@ -58,7 +66,11 @@ NS_RE = re.compile(r"[a-z0-9][a-z0-9\-]*\.ns\.cloudflare\.com", re.I)
 
 
 def log(msg):
-    print(msg, flush=True)
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        # Phòng khi console vẫn không phải UTF-8: in bản không dấu thay vì crash.
+        print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
 # ---------------------------------------------------------------- profile Chrome
