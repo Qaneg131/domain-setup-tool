@@ -639,7 +639,7 @@ def _select_free_plan(page, domain):
     JavaScript. Trả về True nếu đã qua khỏi trang gói (hoặc không có
     trang gói — đi thẳng tới Review); raise nếu thấy trang gói mà
     không bấm được nút Free."""
-    deadline = time.time() + 15
+    deadline = time.time() + 30
     while time.time() < deadline:
         if _any_visible(page, "Continue to activation"):
             return True
@@ -647,8 +647,16 @@ def _select_free_plan(page, domain):
             break
         page.wait_for_timeout(500)
     else:
-        # Hết 15s mà không thấy trang gói lẫn nút Continue: để bước sau
-        # tự xử lý (nó sẽ chụp màn hình + báo lỗi rõ ràng).
+        # Hết 30s mà không thấy trang gói lẫn nút Continue: ghi lại
+        # trạng thái trang để chẩn đoán (đang ở trang nào? bấm
+        # Continue nhập domain có chuyển trang không?), rồi để bước
+        # sau tự xử lý (nó sẽ chụp màn hình + báo lỗi rõ ràng).
+        try:
+            log(f"    [chẩn đoán] sau 30s không thấy trang gói: url={page.url} "
+                f"title={page.title()!r} "
+                f"co_chu_Select_a_plan_trong_HTML={'Select a plan' in page.content()}")
+        except Exception:
+            pass
         return False
     if _any_visible(page, "Continue to activation"):
         return True
@@ -1271,9 +1279,7 @@ def _click_save_ns(page):
         pass
     # Nút tick xanh có thể không phải <button> (span/a/div, hoặc chỉ có
     # icon SVG không có chữ/title/aria) nên mọi cách trên đều trượt —
-    # bấm trực tiếp bằng JavaScript, không cần biết thẻ gì: phần tử lá
-    # có chữ đúng '✓'/'✔' đang hiển thị, hoặc phần tử kề trước nút X
-    # (tick xanh nằm ngay bên trái nút X như ảnh user gửi).
+    # bấm trực tiếp bằng JavaScript, không cần biết thẻ gì.
     try:
         clicked = page.evaluate("""() => {
             const isVis = e => {
@@ -1281,10 +1287,18 @@ def _click_save_ns(page):
               return r.width > 0 && r.height > 0 &&
                 getComputedStyle(e).visibility !== 'hidden';
             };
-            const leafs = [...document.querySelectorAll('*')].filter(
-              e => e.children.length === 0 && isVis(e) &&
-                ['\\u2713', '\\u2714'].includes((e.textContent || '').trim()));
-            if (leafs.length) { leafs[0].click(); return true; }
+            // Nhanh 1: phan tu SAU NHAT co chu dung '✓'/'✔' (nut tick
+            // co the chua them icon nen khong phai phan tu la).
+            const marks = [...document.querySelectorAll('*')].filter(
+              e => isVis(e) && ['\\u2713', '\\u2714'].includes((e.textContent || '').trim()));
+            if (marks.length) {
+              const depth = e => { let d = 0, x = e; while (x) { d++; x = x.parentElement; } return d; };
+              marks.sort((a, b) => depth(b) - depth(a));
+              marks[0].click();
+              return true;
+            }
+            // Nhanh 2: phan tu ke truoc nut X (tick xanh nam ngay ben
+            // trai nut X nhu anh user gui).
             const isX = e => {
               const t = (e.textContent || '').trim();
               if (['\\u00d7', '\\u2717', '\\u2715'].includes(t)) return true;
@@ -1303,6 +1317,21 @@ def _click_save_ns(page):
               const target = prev.querySelector('button, a, [role=button]') || prev;
               target.click();
               return true;
+            }
+            // Nhanh 3: trong muc Nameservers, nut co class/id/aria
+            // mang nghia luu (check/tick/ok) — phong khi tick xanh chi
+            // la icon SVG, khong co chu nao de nhan dang.
+            const inp = document.querySelector("input[placeholder*='Nameserver' i]");
+            if (inp) {
+              let sec = inp;
+              for (let i = 0; i < 5 && sec.parentElement; i++) sec = sec.parentElement;
+              const cands = [...sec.querySelectorAll('button, a, [role=button]')].filter(e => {
+                if (!isVis(e)) return false;
+                const s = ((e.className && String(e.className)) || '') + ' ' + (e.id || '') + ' ' +
+                  (e.getAttribute('aria-label') || '') + ' ' + (e.title || '');
+                return /check|tick|\\bok\\b/i.test(s);
+              });
+              if (cands.length) { cands[0].click(); return true; }
             }
             return false;
         }""")
@@ -1403,6 +1432,20 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
         raise RuntimeError(f"không điền được nameserver: {e}")
     # Lưu: dấu tick xanh (✓) bên phải mục Nameservers (ảnh user gửi).
     if not _click_save_ns(page):
+        # Ghi HTML thật của mục Nameservers vào log để lần sau nhìn là
+        # biết nút lưu là dạng nào (thẻ gì, class gì, có chữ/icon gì),
+        # khỏi đoán mò qua ảnh chụp.
+        try:
+            sec = page.evaluate("""() => {
+              const inp = document.querySelector("input[placeholder*='Nameserver' i]");
+              if (!inp) return 'khong thay o Nameserver';
+              let a = inp;
+              for (let i = 0; i < 4 && a.parentElement; i++) a = a.parentElement;
+              return (a.outerHTML || '').slice(0, 900);
+            }""")
+            log(f"    [chẩn đoán] HTML mục Nameservers: {sec}")
+        except Exception:
+            pass
         shot(page, domain, "nc-no-save")
         raise RuntimeError("không tìm được nút lưu (dấu tick xanh) ở Namecheap")
     page.wait_for_timeout(2500)
