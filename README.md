@@ -56,8 +56,9 @@ python3 web_app.py
 
 Trong web (không còn mục key nữa, chỉ còn Giai đoạn 1):
 - Dán full domain vào ô lớn, chạy hàng loạt tới bước 3
-  (Cloudflare Add site Free → lấy 2 nameserver → Namecheap Manage →
-  Nameservers → Custom DNS → dán 2 NS → lưu).
+  (Namecheap Domain List → ô Search cạnh Filters → MANAGE →
+  Cloudflare Add site Free → lấy 2 nameserver → quay lại trang Manage →
+  Custom DNS → dán 2 NS → lưu).
 - Kết quả hiện ngay tại chỗ dưới form, không nhảy trang khác.
 - **Giai đoạn 2** (thêm DNS record) tạm ẩn khỏi web — khi cần thì chạy
   bằng dòng lệnh, xem mục 2 (`--phase 2`, 3 ô Type/Name/Content,

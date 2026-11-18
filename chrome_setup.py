@@ -643,25 +643,65 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
 
 
 # ---------------------------------------------------------------- Namecheap
-def namecheap_set_ns(page, domain, ns_list, dry_run=False):
-    log(f"  Namecheap: đổi NS cho {domain} -> {', '.join(ns_list)}")
-    url = f"https://ap.www.namecheap.com/domains/domaincontrolpanel/{domain}/domain"
-    page.goto(url, wait_until="domcontentloaded")
-    page.wait_for_timeout(3000)
-    body = page.content().lower()
-    if "nameserver" not in body:
-        # Vào thẳng trang đó không được -> qua Domain List bấm Manage
-        page.goto("https://ap.www.namecheap.com/domains/list", wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
+def namecheap_open_manage(page, domain):
+    """Mở trang Manage của domain ở Namecheap, đúng luồng user chỉ:
+    ap.www.namecheap.com -> Domain List -> ô Search cạnh Filters -> gõ
+    domain -> Enter -> bấm MANAGE ở dòng đó. Trả về URL trang Manage.
+    (Bản cũ vào thẳng URL manage rồi fallback tìm text domain trên trang 1
+    của list — list có 45 trang nên domain thường không nằm ở trang 1, và
+    nút MANAGE đầu tiên bấm được có thể là của domain khác.)"""
+    log(f"  Namecheap: tìm {domain} trong Domain List")
+    page.goto("https://ap.www.namecheap.com/domains/list", wait_until="domcontentloaded")
+    page.wait_for_timeout(2500)
+    # Ô Search nằm cạnh Filters (ảnh 1). Nếu trang chưa load đúng, thử bấm
+    # "Domain List" ở menu trái rồi tìm lại.
+    search = page.get_by_placeholder("Search").first
+    try:
+        search.wait_for(state="visible", timeout=8000)
+    except Exception:
         try:
-            row = page.locator(f"text={domain}").first
-            row.wait_for(state="visible", timeout=8000)
-            manage = page.get_by_role("button", name=re.compile("Manage", re.I)).first
-            manage.click(timeout=5000)
-            page.wait_for_timeout(3000)
+            page.get_by_role("link", name=re.compile("Domain List", re.I)).first.click(timeout=5000)
+            page.wait_for_timeout(2500)
+            search.wait_for(state="visible", timeout=8000)
         except Exception:
-            shot(page, domain, "nc-list-fail")
-            raise RuntimeError("không mở được Domain List / Manage ở Namecheap")
+            shot(page, domain, "nc-list-no-search")
+            raise RuntimeError("không thấy ô Search ở Domain List của Namecheap")
+    search.click()
+    search.fill(domain)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(2500)
+    try:
+        page.locator(f"text={domain}").first.wait_for(state="visible", timeout=10000)
+    except Exception:
+        shot(page, domain, "nc-domain-not-found")
+        raise RuntimeError(f"không tìm thấy {domain} trong Domain List của Namecheap "
+                           "(đã search mà không ra — kiểm tra domain có ở Namecheap không)")
+    # Sau khi search chỉ còn dòng domain đó (các dòng khác đã lọc hết),
+    # nút MANAGE đầu tiên chính là của nó.
+    manage = page.get_by_role("button", name="MANAGE").first
+    manage.wait_for(state="visible", timeout=5000)
+    manage.click(timeout=5000)
+    page.wait_for_timeout(3000)
+    manage_url = page.url
+    log(f"    đã mở trang Manage: {manage_url}")
+    return manage_url
+
+
+def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
+    log(f"  Namecheap: đổi NS cho {domain} -> {', '.join(ns_list)}")
+    # Quay lại trang Manage đã mở ở bước 1; nếu không còn ở đó thì mở lại
+    # bằng cách search trong Domain List (đúng luồng user chỉ).
+    on_manage = False
+    if manage_url:
+        page.goto(manage_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        on_manage = "nameserver" in page.content().lower()
+    if not on_manage:
+        manage_url = namecheap_open_manage(page, domain)
+        page.wait_for_timeout(2000)
+        if "nameserver" not in page.content().lower():
+            shot(page, domain, "nc-no-nameserver")
+            raise RuntimeError("đã mở trang Manage nhưng không thấy mục Nameservers")
     if dry_run:
         log("    [dry-run] sẽ chọn Custom DNS, dán 2 NS, bấm dấu tick xanh — không lưu thật.")
         return "dry-run"
@@ -787,13 +827,20 @@ def setup_one(page, domain, args, presets, file_map):
     ns_list = []
     try:
         if args.phase in ("1", "all"):
+            # Luồng mới theo user: Namecheap trước (Domain List -> Search ->
+            # MANAGE), rồi Cloudflare add domain lấy 2 NS, rồi quay lại
+            # trang Manage ở Namecheap điền 2 NS vào Custom DNS (ảnh 2).
+            manage_url = None
+            if not args.only_cloudflare:
+                manage_url = namecheap_open_manage(page, domain)
             ns_list, st = cloudflare_add_site(page, domain, dry_run=args.dry_run)
             result["nameservers"] = ", ".join(ns_list)
             if args.dry_run:
                 result["status"] = "dry-run-phase1"
                 return result
             if not args.only_cloudflare:
-                namecheap_set_ns(page, domain, ns_list, dry_run=args.dry_run)
+                namecheap_set_ns(page, domain, ns_list, dry_run=args.dry_run,
+                                 manage_url=manage_url)
             result["status"] = "phase1-done" if args.phase == "1" else "phase1-part"
         if args.phase in ("2", "all"):
             recs = records_for_domain(domain, args, presets, file_map)
