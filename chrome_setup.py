@@ -114,6 +114,30 @@ def cdp_alive(port=CDP_PORT):
         return False
 
 
+def chrome_already_running():
+    """Chrome đang mở sẵn thì profile bị khoá: tool mở Chrome mới sẽ chỉ
+    hiện 1 cửa sổ about:blank trong Chrome cũ và tool không điều khiển
+    được gì. Phát hiện trước để báo rõ, thay vì mở cửa sổ trắng rồi kẹt."""
+    try:
+        if platform.system() == "Windows":
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe",
+                                  "/FO", "CSV"], capture_output=True, text=True,
+                                 timeout=10).stdout
+            return "chrome.exe" in out.lower()
+        import shutil
+        if shutil.which("pgrep"):
+            r = subprocess.run(["pgrep", "-x", "Google Chrome"], capture_output=True,
+                               timeout=10)
+            if r.returncode == 0:
+                return True
+            r = subprocess.run(["pgrep", "-x", "chrome"], capture_output=True,
+                               timeout=10)
+            return r.returncode == 0
+    except Exception:
+        pass
+    return False
+
+
 # ---------------------------------------------------------------- helpers click
 def click_first(page, description, timeout=8000, **locators):
     """Thử lần lượt nhiều cách tìm nút, cái nào thấy thì click cái đó."""
@@ -634,15 +658,25 @@ def main():
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             cdp_mode = True
         else:
+            if chrome_already_running():
+                log("!! Chrome ĐANG MỞ SẴN ở máy bạn, nên tool không mở được Chrome riêng.")
+                log("   Cửa sổ about:blank vừa hiện là Chrome cũ mở thêm, tool không")
+                log("   điều khiển được nó — đó là lý do trang đứng im không chạy.")
+                log("   Cách sửa: ĐÓNG HẾT mọi cửa sổ Chrome (kể cả Chrome chạy ẩn dưới")
+                log("   khay hệ thống — chuột phải icon Chrome ở khay -> Thoát), rồi bấm")
+                log("   Chạy lại. Hoặc chạy start-chrome.bat trước để mở Chrome với cổng")
+                log("   debug, rồi bấm Chạy (tool sẽ nối vào Chrome đó).")
+                sys.exit(3)
             log("Chrome chưa bật cổng debug — tool sẽ tự mở Chrome bằng profile thật của bạn.")
-            log("Nếu báo lỗi 'profile đang được dùng', hãy ĐÓNG hết cửa sổ Chrome rồi chạy lại.")
             try:
                 # chromium_sandbox=True: Playwright mặc định tắt sandbox của Chrome
                 # (--no-sandbox) nên Chrome hiện cảnh báo "cờ dòng lệnh không được
                 # hỗ trợ". Bật sandbox lại thì hết cảnh báo, Chrome chạy như bình thường.
+                # (Đã bỏ --disable-blink-features=AutomationControlled vì Chrome
+                # cũng báo cờ đó không được hỗ trợ.)
                 kwargs = dict(user_data_dir=profile, headless=False,
                               chromium_sandbox=True,
-                              args=["--no-first-run", "--disable-blink-features=AutomationControlled"],
+                              args=["--no-first-run"],
                               viewport={"width": 1280, "height": 900},
                               ignore_https_errors=True)
                 if chrome_exe:
@@ -655,6 +689,7 @@ def main():
                 log("Cách sửa: đóng hết Chrome rồi chạy lại. Hoặc chạy start-chrome.bat/.sh trước, rồi chạy tool.")
                 sys.exit(2)
         page = context.new_page() if not context.pages else context.pages[0]
+        log("Đã nối vào Chrome, đang mở Cloudflare để kiểm tra đăng nhập...")
         try:
             ensure_logged_in(page, "Cloudflare", "https://dash.cloudflare.com/",
                              ["log in", "sign in", "enter your email"])
