@@ -943,6 +943,39 @@ def _search_domain_in_list(page, search, domain):
                        "(đã search mà không ra — kiểm tra domain có ở Namecheap không)")
 
 
+def _find_manage_button(page, domain):
+    """Tìm nút MANAGE của domain trong Domain List đã lọc.
+    Nút này trên trang thật KHÔNG phải <button> (get_by_role('button')
+    không khớp dù nút hiện rõ trong ảnh user gửi) mà là link <a>, nên
+    phải thử nhiều dạng: button → link → bất kỳ phần tử nào có chữ
+    MANAGE. Ưu tiên tìm trong dòng chứa domain để không bấm nhầm
+    MANAGE ở chỗ khác."""
+    # 1. Trong dòng (tr) chứa tên domain.
+    try:
+        rows = page.locator("tr", has_text=domain)
+        if rows.count() > 0:
+            row = rows.first
+            if row.is_visible():
+                for loc in (row.get_by_role("button", name="MANAGE"),
+                            row.get_by_role("link", name="MANAGE"),
+                            row.get_by_text("MANAGE", exact=True)):
+                    el = _first_visible_now(loc)
+                    if el:
+                        return el
+    except Exception:
+        pass
+    # 2. Toàn trang (sau khi lọc chỉ còn 1 dòng nên MANAGE hiện ra
+    # chính là của domain đó; _first_visible_now bỏ qua các MANAGE
+    # đang ẩn trong menu khác).
+    for loc in (page.get_by_role("button", name="MANAGE"),
+                page.get_by_role("link", name="MANAGE"),
+                page.get_by_text("MANAGE", exact=True)):
+        el = _first_visible_now(loc)
+        if el:
+            return el
+    return None
+
+
 def namecheap_open_manage(page, domain):
     """Mở trang Manage của domain ở Namecheap, đúng luồng user chỉ:
     ap.www.namecheap.com -> Domain List -> ô Search cạnh Filters -> gõ
@@ -971,11 +1004,13 @@ def namecheap_open_manage(page, domain):
     # Sau khi search chỉ còn dòng domain đó (các dòng khác đã lọc hết),
     # nút MANAGE đầu tiên HIỂN THỊ chính là của nó (không lấy .first vì
     # .first có thể trúng nút MANAGE đang ẩn trong menu khác — cùng lỗi
-    # như ô Search và kiểm tra đăng nhập trước đây).
+    # như ô Search và kiểm tra đăng nhập trước đây). _find_manage_button
+    # thử cả button/link/chữ MANAGE vì nút thật là link <a>, không phải
+    # <button>.
     manage = None
     deadline = time.time() + 10
     while time.time() < deadline and manage is None:
-        manage = _first_visible_now(page.get_by_role("button", name="MANAGE"))
+        manage = _find_manage_button(page, domain)
         if not manage:
             page.wait_for_timeout(400)
     if not manage:
