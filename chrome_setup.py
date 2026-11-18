@@ -506,15 +506,27 @@ def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
                     page.get_by_role("button", name="Sign in").first.is_visible(timeout=1500)
             except Exception:
                 pass
+            try:
+                title = page.title()
+            except Exception:
+                title = "(không đọc được tiêu đề)"
             log(f"  !! Chưa đăng nhập {site} ở Chrome này. Đang ở: {page.url}")
+            log(f"     Tiêu đề tab tool đang nhìn: {title}")
             if on_login_form:
                 log("     (Trang đang hiện form đăng nhập — chưa vào được, hãy nhập tài khoản rồi bấm Sign in.)")
+            else:
+                log("     (Không thấy form đăng nhập — chụp lại màn hình tab tool đang nhìn để kiểm tra.)")
+            shot(page, site, "waiting-login")
             log("     Hãy đăng nhập NGAY TRONG cửa sổ Chrome vừa mở,")
             log("     tool sẽ tự chạy tiếp khi thấy đã đăng nhập (không cần bấm gì).")
             warned = True
             last_reminder = time.time()
         elif time.time() - last_reminder > 30:
-            log(f"  ... vẫn đang đợi đăng nhập {site} (đang ở: {page.url})")
+            try:
+                title = page.title()
+            except Exception:
+                title = "(không đọc được tiêu đề)"
+            log(f"  ... vẫn đang đợi đăng nhập {site} (đang ở: {page.url} | tiêu đề: {title})")
             last_reminder = time.time()
         page.wait_for_timeout(5000)
 
