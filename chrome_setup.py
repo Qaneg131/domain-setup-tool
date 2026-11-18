@@ -688,7 +688,16 @@ def main():
                 log(f"LỖI mở Chrome: {e}")
                 log("Cách sửa: đóng hết Chrome rồi chạy lại. Hoặc chạy start-chrome.bat/.sh trước, rồi chạy tool.")
                 sys.exit(2)
-        page = context.new_page() if not context.pages else context.pages[0]
+        # Tab làm việc: mở tab mới RIÊNG cho tool và đưa lên trước để user
+        # xem trực tiếp từng bước. Không chiếm tab web UI hay tab khác của user,
+        # không chạy ẩn. Chỉ dùng lại tab đầu nếu nó đang là about:blank
+        # (Chrome vừa mở, chưa có gì).
+        if context.pages and context.pages[0].url == "about:blank":
+            page = context.pages[0]
+        else:
+            page = context.new_page()
+        page.bring_to_front()
+        log("Đã mở tab làm việc riêng và đưa lên trước để bạn xem trực tiếp.")
         log("Đã nối vào Chrome, đang mở Cloudflare để kiểm tra đăng nhập...")
         try:
             ensure_logged_in(page, "Cloudflare", "https://dash.cloudflare.com/",
