@@ -433,6 +433,22 @@ def doh_ns(domain):
         return []
 
 
+def safe_goto(page, url, what="trang"):
+    """Mở trang, timeout rõ ràng + thử lại 1 lần. Nếu vẫn không mở được thì
+    báo lỗi dễ hiểu thay vì để tab đứng ở about:blank với traceback dài
+    (bản cũ: goto timeout là tool chết luôn, Chrome bỏ lại toàn tab trắng)."""
+    for attempt in (1, 2):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            return
+        except Exception as e:
+            log(f"  Mở {what} ({url}) lần {attempt} lỗi: {str(e)[:150]}")
+            if attempt == 2:
+                raise RuntimeError(f"không mở được {what} ({url}) — kiểm tra mạng "
+                                   "và Chrome có bị kẹt ở trang trắng không")
+            page.wait_for_timeout(2000)
+
+
 # ---------------------------------------------------------------- login check
 def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
     # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
@@ -459,7 +475,7 @@ def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
     deadline = time.time() + wait_minutes * 60
     warned = False
     last_reminder = 0.0
-    page.goto(start_url, wait_until="domcontentloaded")
+    safe_goto(page, start_url, site)
     page.wait_for_timeout(2000)
     while True:
         url = page.url.lower()
@@ -1027,10 +1043,25 @@ def main():
         # xem trực tiếp từng bước. Không chiếm tab web UI hay tab khác của user,
         # không chạy ẩn. Chỉ dùng lại tab đầu nếu nó đang là about:blank
         # (Chrome vừa mở, chưa có gì).
+        for _ in range(20):
+            if context.pages:
+                break
+            time.sleep(0.5)
+        log("Chrome đang mở %d tab: %s" % (len(context.pages),
+            ", ".join(pg.url[:60] for pg in context.pages[:5]) or "(chưa có tab nào)"))
         if context.pages and context.pages[0].url == "about:blank":
             page = context.pages[0]
         else:
             page = context.new_page()
+        if not cdp_mode:
+            # Chrome copy có thể khôi phục session cũ thành các tab trắng thừa —
+            # đóng bớt cho gọn, chỉ giữ tab làm việc.
+            for pg in list(context.pages):
+                if pg is not page and pg.url == "about:blank":
+                    try:
+                        pg.close()
+                    except Exception:
+                        pass
         page.bring_to_front()
         log("Đã mở tab làm việc riêng và đưa lên trước để bạn xem trực tiếp.")
         log("Đã nối vào Chrome, đang mở Cloudflare để kiểm tra đăng nhập...")
