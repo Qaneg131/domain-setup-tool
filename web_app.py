@@ -1,37 +1,46 @@
 #!/usr/bin/env python3
 """
-Web nội bộ: Namecheap -> Cloudflare, chạy trên máy của bạn, không public.
-Chạy:
-    python3 web_app.py
-    # mở http://127.0.0.1:8000 trên trình duyệt
+Web nội bộ: Namecheap -> Cloudflare BẰNG CHROME ĐÃ ĐĂNG NHẬP.
+KHÔNG cần API key / token. Không nhập mật khẩu vào đây.
 
-- Giai đoạn 1: dán full domain (mỗi dòng 1 domain) -> tạo zone Cloudflare + đổi NS ở Namecheap (tới bước 3)
-- Giai đoạn 2: nhập domain + 3 ô DNS record (Type / Name / Content), ô nào để trống thì BỎ QUA,
-  hỗ trợ A, AAAA, CNAME, TXT, MX. Có nút + Thêm dòng nếu cần hơn 3.
-- Key/token chỉ nhập ở máy bạn, lưu vào file .env local, KHÔNG gửi đi đâu khác,
-  KHÔNG commit lên git (đã có .gitignore).
-- Chỉ dùng Python stdlib + requests, không cần Flask.
+Chạy ở máy bạn:
+    pip install -r requirements.txt
+    playwright install chromium   # 1 lần duy nhất
+    python3 web_app.py
+    # mở http://127.0.0.1:8000
+
+- Giai đoạn 1: dán full domain, chạy hàng loạt tới bước 3
+  (Cloudflare Add site -> lấy 2 NS -> Namecheap Custom DNS -> lưu).
+- Giai đoạn 2: sau đó mới thêm DNS record, mỗi domain 3 ô
+  (Type / Name / Content), ô nào trống thì bỏ qua.
+- Khi bấm Chạy, tool tự mở Chrome bằng đúng profile của bạn
+  (đã đăng nhập sẵn Cloudflare + Namecheap) và tự click thay bạn.
+  Bạn chỉ cần ngồi xem, không cần thao tác gì.
+  Nếu tool báo "profile đang được dùng": đóng hết cửa sổ Chrome
+  rồi bấm Chạy lại — tool sẽ tự mở Chrome đã đăng nhập.
+  (Hoặc chạy start-chrome.bat / start-chrome.sh trước, rồi bấm Chạy.)
+
+Bản API cũ (cần key) vẫn giữ ở web_app_api.py + setup_domain.py,
+chỉ dùng khi bạn muốn chạy không cần mở Chrome.
 """
+import csv
+import glob
 import io
+import json
 import os
+import subprocess
 import sys
-from contextlib import redirect_stdout
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
 BASE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE_DIR))
-
-from setup_domain import Cloudflare, Namecheap, load_dotenv, load_presets, setup_one  # noqa: E402
-
-load_dotenv()
-
 PORT = int(os.environ.get("PORT", "8000"))
 
 HTML = """<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Domain Setup — Namecheap → Cloudflare (nội bộ)</title>
+<title>Domain Setup — Chrome đã đăng nhập (nội bộ)</title>
 <style>
 body{font-family:system-ui,Arial,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#16130f;background:#fffdf9}
 h1{font-size:24px} h2{font-size:18px;margin-top:28px;border-top:1px solid #ddd;padding-top:16px}
@@ -46,26 +55,22 @@ td input,td select{width:100%} .row-proxied{width:60px;text-align:center}
 pre{background:#16130f;color:#f5f2ed;padding:12px;border-radius:6px;white-space:pre-wrap}
 </style></head><body>
 <h1>Domain Setup — Namecheap → Cloudflare</h1>
-<p class="note"><b>Web nội bộ, chạy ở http://127.0.0.1:8000</b> — key chỉ ở máy bạn, trong file <code>.env</code>, không gửi đi đâu khác.
+<p class="note"><b>Chạy bằng Chrome đã đăng nhập — không cần key/token gì hết.</b>
+<br>Web nội bộ ở http://127.0.0.1:8000, chỉ ở máy bạn.
 <br><b>Giai đoạn 1:</b> dán full domain, chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
-<br><b>Giai đoạn 2:</b> sau đó mới thêm DNS record, mỗi domain 3 ô, ô nào trống thì bỏ qua.</p>
+<br><b>Giai đoạn 2:</b> sau đó mới thêm DNS record, mỗi domain 3 ô, ô nào trống thì bỏ qua.
+<br><b>Cách chạy:</b> bấm Chạy, tool tự mở Chrome bằng profile của bạn (đã đăng nhập sẵn)
+và tự click thay bạn. Bạn không cần thao tác gì, chỉ ngồi xem.
+Nếu báo "profile đang được dùng" thì đóng hết Chrome rồi bấm Chạy lại.</p>
 
 <form method="post" action="/run">
-<h2>0. Key / Token (nhập 1 lần, tick Lưu để ghi vào .env)</h2>
-<label>Cloudflare API Token</label>
-<input name="cf_token" type="password" placeholder="Token có quyền Zone:Edit + DNS:Edit" value="{cf_token}">
-<label>Namecheap API User</label><input name="nc_user" value="{nc_user}">
-<label>Namecheap API Key</label><input name="nc_key" type="password" value="">
-<label>Namecheap Username</label><input name="nc_username" value="{nc_username}">
-<label><input type="checkbox" name="save_settings" style="width:auto"> Lưu các key trên vào .env ở máy này</label>
-
 <h2>1. Giai đoạn 1 — Full domain (mỗi dòng 1 domain)</h2>
 <textarea name="domains" rows="8" placeholder="example.com&#10;shop-example.com&#10;landing-example.com"></textarea>
 <p>
 <label style="display:inline"><input type="radio" name="phase" value="1" checked style="width:auto"> Giai đoạn 1: tạo zone + đổi NS</label>
 <label style="display:inline;margin-left:12px"><input type="radio" name="phase" value="2" style="width:auto"> Giai đoạn 2: chỉ thêm DNS record</label>
 <label style="display:inline;margin-left:12px"><input type="radio" name="phase" value="all" style="width:auto"> Cả 2 trong 1 lần</label>
-<label style="display:inline;margin-left:12px"><input type="checkbox" name="dry_run" checked style="width:auto"> Dry-run (xem trước, không đổi gì thật)</label>
+<label style="display:inline;margin-left:12px"><input type="checkbox" name="dry_run" checked style="width:auto"> Dry-run (mở Chrome kiểm tra đăng nhập, xem trước, không đổi gì thật)</label>
 </p>
 
 <h2>2. Giai đoạn 2 — DNS record (3 ô, ô trống bỏ qua)</h2>
@@ -82,10 +87,11 @@ pre{background:#16130f;color:#f5f2ed;padding:12px;border-radius:6px;white-space:
 </table>
 <p><button type="button" class="ghost" onclick="addRow()">+ Thêm 1 ô record</button></p>
 
-<p><button type="submit">Chạy</button>
+<p><button type="submit">Chạy bằng Chrome</button>
 <button type="button" class="secondary" onclick="window.open('https://dash.cloudflare.com','_blank')">Mở Cloudflare</button>
 <button type="button" class="secondary" onclick="window.open('https://www.namecheap.com/myaccount/','_blank')">Mở Namecheap</button></p>
-<p class="small">Không muốn dùng API key? Dùng cách Chrome: mở 2 link trên, đăng nhập tay, làm theo các bước 1-3 ở trên. Web này chỉ là form nhập liệu + chạy API ở máy bạn.</p>
+<p class="small">Tool không lưu mật khẩu, không lấy key. Nó chỉ điều khiển Chrome ở máy bạn,
+dùng phiên đăng nhập sẵn có. Chạy xong Chrome vẫn mở để bạn kiểm tra lại.</p>
 </form>
 <script>
 let n=3;
@@ -117,11 +123,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
-            # Không dùng .format() vì HTML/CSS/JS chứa nhiều dấu { } — thay token thủ công
-            page = (HTML.replace("{cf_token}", "••••••••" if os.environ.get("CLOUDFLARE_API_TOKEN") else "")
-                        .replace("{nc_user}", os.environ.get("NAMECHEAP_API_USER", ""))
-                        .replace("{nc_username}", os.environ.get("NAMECHEAP_USERNAME", "")))
-            self._send(page)
+            self._send(HTML)
         else:
             self._send("<h1>404</h1><p><a href='/'>Về trang chính</a></p>", 404)
 
@@ -129,7 +131,6 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         form = parse_qs(self.rfile.read(length).decode("utf-8"))
         get = lambda k, d="": (form.get(k) or [d])[0]
-
         if self.path == "/run":
             self._handle_run(form, get)
         else:
@@ -144,28 +145,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send("<h1>Thiếu domain</h1><p>Dán domain vào ô Giai đoạn 1, mỗi dòng 1 domain.</p><p><a href='/'>Quay lại</a></p>")
             return
 
-        # Key: ưu tiên form nhập, rồi .env
-        cf_token = get("cf_token") or os.environ.get("CLOUDFLARE_API_TOKEN", "")
-        # token đã lưu chỉ hiện ••••, không dùng lại được — nếu user không nhập token mới thì lấy từ .env
-        if cf_token.startswith("•"):
-            cf_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-        if get("save_settings"):
-            env_path = BASE_DIR / ".env"
-            lines = []
-            if env_path.exists():
-                lines = [l for l in env_path.read_text(encoding="utf-8").splitlines()
-                         if not l.startswith(("CLOUDFLARE_API_TOKEN=", "NAMECHEAP_API_USER=",
-                                              "NAMECHEAP_API_KEY=", "NAMECHEAP_USERNAME="))]
-            if cf_token:
-                lines.append(f"CLOUDFLARE_API_TOKEN={cf_token}")
-            if get("nc_user"):
-                lines.append(f"NAMECHEAP_API_USER={get('nc_user')}")
-            if get("nc_key"):
-                lines.append(f"NAMECHEAP_API_KEY={get('nc_key')}")
-            if get("nc_username"):
-                lines.append(f"NAMECHEAP_USERNAME={get('nc_username')}")
-            env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
         # 3 ô record: ô nào trống content thì bỏ qua
         records = []
         for i in range(20):
@@ -173,59 +152,64 @@ class Handler(BaseHTTPRequestHandler):
             c = get(f"content_{i}", "").strip()
             if not t or not c:
                 continue
-            rec = {"type": t, "name": get(f"name_{i}", "@") or "@", "content": c, "ttl": 1}
-            if t in ("A", "AAAA", "CNAME"):
-                rec["proxied"] = f"proxied_{i}" in form
+            rec = {"type": t, "name": get(f"name_{i}", "@") or "@", "content": c,
+                   "proxied": f"proxied_{i}" in form}
             records.append(rec)
 
-        buf = io.StringIO()
-        results = []
-        with redirect_stdout(buf):
-            try:
-                cf = Cloudflare(cf_token, os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""))
-                nc = None
-                if phase != "2" and not dry_run:
-                    nc = Namecheap(get("nc_user") or os.environ.get("NAMECHEAP_API_USER", ""),
-                                   get("nc_key") or os.environ.get("NAMECHEAP_API_KEY", ""),
-                                   get("nc_username") or os.environ.get("NAMECHEAP_USERNAME", ""),
-                                   os.environ.get("NAMECHEAP_CLIENT_IP", ""))
-                preset = {"records": records}
-                # object giả lập args của CLI
-                class Args:
-                    pass
-                args = Args()
-                args.phase = phase
-                args.dry_run = dry_run
-                args.skip_scan = False
-                args.only_cloudflare = False
-                args.only_namecheap = False
-                for d in domains:
-                    print(f"=== {d} (phase {phase}) ===", flush=True)
-                    # phase 2 mà không có record thì báo luôn, không gọi API vô ích
-                    if phase == "2" and not records:
-                        print("  Không có record nào (tất cả ô đều trống), bỏ qua.", flush=True)
-                        results.append({"domain": d, "status": "skipped-empty", "records": ""})
-                        continue
-                    r = setup_one(d, cf, nc, preset, None, args,
-                                  custom_records=records if phase in ("2", "all") else [])
-                    results.append(r)
-            except Exception as e:
-                print(f"LỖI: {e}", flush=True)
+        # Ghi input tạm rồi gọi chrome_setup.py (chạy Chrome thật ở máy bạn)
+        tmpdir = Path(tempfile.mkdtemp(prefix="domain-chrome-"))
+        dom_file = tmpdir / "domains.txt"
+        dom_file.write_text("\n".join(domains) + "\n", encoding="utf-8")
+        cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"),
+               "--domains-file", str(dom_file), "--phase", phase, "--keep-open"]
+        if dry_run:
+            cmd.append("--dry-run")
+        rec_file = None
+        if phase in ("2", "all") and records:
+            rec_file = tmpdir / "records.json"
+            rec_file.write_text(json.dumps({"__shared__": records}, ensure_ascii=False),
+                                encoding="utf-8")
+            cmd += ["--records-file", str(rec_file)]
 
-        rows = "".join(
-            f"<tr><td>{r.get('domain')}</td><td>{r.get('status')}</td>"
-            f"<td>{r.get('nameservers','')}</td><td>{r.get('records','')}</td><td>{r.get('error','')}</td></tr>"
-            for r in results)
-        log = buf.getvalue()
-        self._send(f"""<h1>Kết quả — Phase {phase} {'(dry-run)' if dry_run else ''}</h1>
-<p>{len(results)} domain, {len(records)} record đã nhập (ô trống đã bỏ qua).</p>
-<table><tr><th>Domain</th><th>Status</th><th>Nameservers</th><th>Records</th><th>Lỗi</th></tr>{rows}</table>
-<h2>Log</h2><pre>{log}</pre>
+        before = set(glob.glob(str(BASE_DIR / "reports" / "chrome_setup_*.csv")))
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
+                                  cwd=str(BASE_DIR))
+            log_text = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        except subprocess.TimeoutExpired:
+            log_text = "Hết thời gian chờ (30 phút). Chrome có thể vẫn đang chạy — kiểm tra lại trong Chrome."
+            proc = None
+        except Exception as e:
+            log_text = f"LỖI chạy chrome_setup.py: {e}"
+
+        # Đọc báo cáo CSV mới nhất (nếu có)
+        rows_html = ""
+        after = sorted(set(glob.glob(str(BASE_DIR / "reports" / "chrome_setup_*.csv"))) - before)
+        csv_path = after[-1] if after else None
+        if csv_path:
+            try:
+                with open(csv_path, encoding="utf-8") as f:
+                    for r in csv.DictReader(f):
+                        rows_html += (f"<tr><td>{r.get('domain')}</td><td>{r.get('status')}</td>"
+                                      f"<td>{r.get('nameservers','')}</td><td>{r.get('records','')}</td>"
+                                      f"<td>{r.get('error','')}</td></tr>")
+            except Exception:
+                pass
+        if not rows_html:
+            rows_html = "<tr><td colspan='5'>Chưa có báo cáo CSV — xem log bên dưới (có thể Chrome chưa mở được, xem mục 'profile đang được dùng').</td></tr>"
+
+        # Escape log để hiển thị an toàn
+        esc = (log_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+        self._send(f"""<h1>Kết quả — Phase {phase} {'(dry-run)' if dry_run else ''} — chạy bằng Chrome</h1>
+<p>{len(domains)} domain, {len(records)} record đã nhập (ô trống đã bỏ qua). Chrome vẫn mở để bạn kiểm tra lại.</p>
+<table><tr><th>Domain</th><th>Status</th><th>Nameservers</th><th>Records</th><th>Lỗi</th></tr>{rows_html}</table>
+<h2>Log</h2><pre>{esc}</pre>
 <p><a href="/">← Quay lại form</a></p>
-<p class="small">Zone mới thường ở trạng thái pending tới khi NS propagate (5 phút – 24h).</p>""")
+<p class="small">Zone mới thường ở trạng thái pending tới khi NS propagate (5 phút – 24h).
+Nếu 1 domain lỗi vì giao diện đổi nút, tool đã chụp màn hình vào thư mục reports/ — mở ảnh đó lên là biết nó kẹt ở đâu.</p>""")
 
 
 if __name__ == "__main__":
-    print(f"Web nội bộ chạy ở http://127.0.0.1:{PORT}  — mở link này trên trình duyệt máy bạn.")
-    print("Nhấn Ctrl+C để dừng.")
+    print(f"Web nội bộ (Chrome) chạy ở http://127.0.0.1:{PORT}  — mở link này trên trình duyệt máy bạn.")
+    print("Bấm Chạy là tool tự mở Chrome đã đăng nhập và làm thay bạn. Nhấn Ctrl+C để dừng web.")
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
