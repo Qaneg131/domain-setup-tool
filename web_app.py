@@ -9,10 +9,10 @@ Chạy ở máy bạn:
     python3 web_app.py
     # mở http://127.0.0.1:8000
 
-- Giai đoạn 1: dán full domain, chạy hàng loạt tới bước 3
+- Dán full domain, chạy hàng loạt tới bước 3
   (Cloudflare Add site -> lấy 2 NS -> Namecheap Custom DNS -> lưu).
-- Giai đoạn 2: sau đó mới thêm DNS record, mỗi domain 3 ô
-  (Type / Name / Content), ô nào trống thì bỏ qua.
+- Giai đoạn 2 (thêm DNS record) tạm ẩn khỏi web — khi cần thì chạy
+  bằng dòng lệnh: python3 chrome_setup.py --phase 2 ...
 - Khi bấm Chạy, tool tự mở Chrome bằng đúng profile của bạn
   (đã đăng nhập sẵn Cloudflare + Namecheap) và tự click thay bạn.
   Bạn chỉ cần ngồi xem, không cần thao tác gì.
@@ -68,35 +68,18 @@ pre{background:#16130f;color:#f5f2ed;padding:12px;border-radius:6px;white-space:
 <h1>Domain Setup — Namecheap → Cloudflare</h1>
 <p class="note"><b>Chạy bằng Chrome đã đăng nhập — không cần key/token gì hết.</b>
 <br>Web nội bộ ở http://127.0.0.1:8000, chỉ ở máy bạn.
-<br><b>Giai đoạn 1:</b> dán full domain, chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
-<br><b>Giai đoạn 2:</b> sau đó mới thêm DNS record, mỗi domain 3 ô, ô nào trống thì bỏ qua.
+<br>Dán full domain, chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
 <br><b>Cách chạy:</b> bấm Chạy, tool tự mở Chrome bằng profile của bạn (đã đăng nhập sẵn)
 và tự click thay bạn. Bạn không cần thao tác gì, chỉ ngồi xem.
 Nếu báo "profile đang được dùng" thì đóng hết Chrome rồi bấm Chạy lại.</p>
 
 <form method="post" action="/run" id="setup-form">
-<h2>1. Giai đoạn 1 — Full domain (mỗi dòng 1 domain)</h2>
+<h2>Full domain (mỗi dòng 1 domain)</h2>
 <textarea name="domains" rows="8" placeholder="example.com&#10;shop-example.com&#10;landing-example.com"></textarea>
+<input type="hidden" name="phase" value="1">
 <p>
-<label style="display:inline"><input type="radio" name="phase" value="1" checked style="width:auto"> Giai đoạn 1: tạo zone + đổi NS</label>
-<label style="display:inline;margin-left:12px"><input type="radio" name="phase" value="2" style="width:auto"> Giai đoạn 2: chỉ thêm DNS record</label>
-<label style="display:inline;margin-left:12px"><input type="radio" name="phase" value="all" style="width:auto"> Cả 2 trong 1 lần</label>
-<label style="display:inline;margin-left:12px"><input type="checkbox" name="dry_run" checked style="width:auto"> Dry-run (mở Chrome kiểm tra đăng nhập, xem trước, không đổi gì thật)</label>
+<label style="display:inline"><input type="checkbox" name="dry_run" checked style="width:auto"> Dry-run (mở Chrome kiểm tra đăng nhập, xem trước, không đổi gì thật)</label>
 </p>
-
-<h2>2. Giai đoạn 2 — DNS record (3 ô, ô trống bỏ qua)</h2>
-<p class="small">Preset nhanh:
-<button type="button" class="ghost" onclick="fillPreset('shopify')">Shopify</button>
-<button type="button" class="ghost" onclick="fillPreset('vps')">VPS (cần IP ở ô A)</button>
-<button type="button" class="ghost" onclick="fillPreset('vercel')">Vercel</button>
-<button type="button" class="ghost" onclick="fillPreset('clear')">Xoá hết</button>
-</p>
-<table id="records"><tr><th>Type</th><th>Name (@ = root)</th><th>Content (IP / đích / text)</th><th>Proxied</th></tr>
-<tr><td><select name="type_0"><option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option><option>MX</option></select></td><td><input name="name_0" value="@" placeholder="@"></td><td><input name="content_0" placeholder="vd: 23.227.38.65"></td><td class="row-proxied"><input type="checkbox" name="proxied_0" checked></td></tr>
-<tr><td><select name="type_1"><option>A</option><option>AAAA</option><option selected>CNAME</option><option>TXT</option><option>MX</option></select></td><td><input name="name_1" value="www" placeholder="www"></td><td><input name="content_1" placeholder="vd: shops.myshopify.com"></td><td class="row-proxied"><input type="checkbox" name="proxied_1" checked></td></tr>
-<tr><td><select name="type_2"><option>A</option><option>AAAA</option><option>CNAME</option><option selected>TXT</option><option>MX</option></select></td><td><input name="name_2" value="@" placeholder="@"></td><td><input name="content_2" placeholder="để trống = bỏ qua ô này"></td><td class="row-proxied"><input type="checkbox" name="proxied_2"></td></tr>
-</table>
-<p><button type="button" class="ghost" onclick="addRow()">+ Thêm 1 ô record</button></p>
 
 <p><button type="submit" id="run-btn">Chạy bằng Chrome</button>
 <button type="button" class="secondary" onclick="window.open('https://dash.cloudflare.com','_blank')">Mở Cloudflare</button>
@@ -129,7 +112,9 @@ document.getElementById('setup-form').addEventListener('submit', async function(
   bang.innerHTML = ''; logEl.textContent = '';
   box.scrollIntoView({behavior:'smooth', block:'start'});
   try {
-    const res = await fetch('/run', {method:'POST', body:new FormData(ev.target)});
+    // Gửi dạng urlencoded (không dùng FormData thô): server đọc bằng parse_qs,
+    // FormData gửi multipart thì server không đọc được field -> báo "Thiếu domain".
+    const res = await fetch('/run', {method:'POST', body:new URLSearchParams(new FormData(ev.target))});
     const data = await res.json();
     const okN = (data.rows||[]).filter(r => r.status && r.status !== 'failed').length;
     tomtat.textContent = data.error
@@ -156,18 +141,6 @@ document.getElementById('setup-form').addEventListener('submit', async function(
   }
   btn.disabled = false; btn.textContent = 'Chạy bằng Chrome';
 });
-</script>
-<script>
-let n=3;
-function addRow(){const t=document.getElementById('records');const r=t.insertRow();
-r.innerHTML=`<td><select name="type_${n}"><option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option><option>MX</option></select></td><td><input name="name_${n}" placeholder="@"></td><td><input name="content_${n}" placeholder="để trống = bỏ qua"></td><td class="row-proxied"><input type="checkbox" name="proxied_${n}" checked></td>`;n++;}
-function setRow(i,type,name,content,proxied){document.getElementsByName('type_'+i)[0].value=type;document.getElementsByName('name_'+i)[0].value=name;document.getElementsByName('content_'+i)[0].value=content;document.getElementsByName('proxied_'+i)[0].checked=proxied;}
-function fillPreset(p){
- if(p==='shopify'){setRow(0,'A','@','23.227.38.65',true);setRow(1,'CNAME','www','shops.myshopify.com',true);setRow(2,'TXT','@','',false);}
- if(p==='vps'){setRow(0,'A','@','1.2.3.4',true);setRow(1,'A','www','1.2.3.4',true);setRow(2,'TXT','@','',false);}
- if(p==='vercel'){setRow(0,'A','@','76.76.21.21',false);setRow(1,'CNAME','www','cname.vercel-dns.com',false);setRow(2,'TXT','@','',false);}
- if(p==='clear'){for(let i=0;i<3;i++)setRow(i,'A','@','',false);}
-}
 </script>
 </body></html>
 """
@@ -202,7 +175,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        form = parse_qs(self.rfile.read(length).decode("utf-8"))
+        raw = self.rfile.read(length)
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in ctype:
+            # Phòng khi trình duyệt còn cache JS cũ gửi FormData (multipart):
+            # parse_qs không đọc được multipart nên sẽ báo "Thiếu domain".
+            import cgi
+            fs = cgi.FieldStorage(fp=io.BytesIO(raw), headers=self.headers,
+                                  environ={"REQUEST_METHOD": "POST",
+                                           "CONTENT_TYPE": ctype,
+                                           "CONTENT_LENGTH": str(length)})
+            form = {}
+            for k in fs.keys():
+                v = fs[k]
+                form[k] = [x.value for x in v] if isinstance(v, list) else [v.value]
+        else:
+            form = parse_qs(raw.decode("utf-8"))
         get = lambda k, d="": (form.get(k) or [d])[0]
         if self.path == "/run":
             self._handle_run(form, get)

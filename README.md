@@ -18,13 +18,14 @@ python3 web_app.py
 # mở http://127.0.0.1:8000
 ```
 
-Trong web (không còn mục key nữa):
-- **Giai đoạn 1:** dán full domain vào ô lớn, chạy hàng loạt tới bước 3
+Trong web (không còn mục key nữa, chỉ còn Giai đoạn 1):
+- Dán full domain vào ô lớn, chạy hàng loạt tới bước 3
   (Cloudflare Add site Free → lấy 2 nameserver → Namecheap Manage →
-  Nameservers → Custom DNS → dán 2 NS → lưu). Chưa cần record.
-- **Giai đoạn 2:** sau đó mới thêm domain + DNS record, mỗi domain 3 ô
-  (Type / Name / Content), ô nào để trống thì bỏ qua. Hỗ trợ A, AAAA,
-  CNAME, TXT, MX. Có nút preset Shopify / VPS / Vercel.
+  Nameservers → Custom DNS → dán 2 NS → lưu).
+- Kết quả hiện ngay tại chỗ dưới form, không nhảy trang khác.
+- **Giai đoạn 2** (thêm DNS record) tạm ẩn khỏi web — khi cần thì chạy
+  bằng dòng lệnh, xem mục 1 (`--phase 2`, 3 ô Type/Name/Content,
+  ô nào trống thì bỏ qua; hỗ trợ A, AAAA, CNAME, TXT, MX).
 - Bấm **Chạy bằng Chrome**: tool tự mở Chrome bằng đúng profile của bạn
   (đã đăng nhập sẵn) và tự click. Bạn không cần thao tác gì, chỉ ngồi xem.
   Chạy xong Chrome vẫn mở để bạn kiểm tra lại.
