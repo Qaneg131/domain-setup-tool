@@ -4,12 +4,34 @@
 Tool điều khiển Chrome ở máy bạn — Chrome đó đã đăng nhập sẵn Cloudflare
 + Namecheap — và tự click thay bạn, y như bạn làm tay.
 
-## 0. Kéo về máy + chạy web nội bộ (khuyên dùng)
+## 0. App desktop (khuyên dùng) — double-click là chạy
+
+```bash
+# Lần đầu, trên máy bạn:
+git clone https://github.com/Qaneg131/domain-setup-tool.git
+cd domain-setup-tool
+pip install -r requirements.txt
+playwright install chromium   # 1 lần duy nhất, để có driver Playwright
+```
+
+Rồi double-click **`run-app.bat`** (hoặc chạy `python app.py`).
+
+App hiện 1 cửa sổ: dán full domain, bấm **Chạy bằng Chrome**, xem log +
+kết quả ngay trong app. Không cần mở web, không cần đóng Chrome:
+- App tự copy profile Chrome sang thư mục tạm rồi mở Chrome từ bản copy
+  đó. Cookie Chrome mã hoá gắn với tài khoản Windows của chính máy đó,
+  nên bản copy mở lên vẫn đăng nhập sẵn như Chrome thật. Chrome thật của
+  bạn cứ mở bình thường. Chạy xong Chrome vẫn mở để bạn kiểm tra lại.
+- Nếu bản copy không mang được đăng nhập (hiếm), app sẽ mở tab và ĐỢI bạn
+  đăng nhập trong cửa sổ Chrome đó — đăng nhập xong là tool tự chạy tiếp,
+  không cần bấm gì. Quá 5 phút chưa đăng nhập thì tool báo lỗi.
+- Tab làm việc mở riêng và đưa lên trước để bạn xem trực tiếp từng bước.
+
+## 1. Web nội bộ (cách cũ, vẫn dùng được)
 
 Web nội bộ chạy ở `http://127.0.0.1:8000`, chỉ ở máy bạn, không public.
 
 ```bash
-# Lần đầu, trên máy bạn:
 git clone https://github.com/Qaneg131/domain-setup-tool.git
 cd domain-setup-tool
 pip install -r requirements.txt
@@ -24,26 +46,17 @@ Trong web (không còn mục key nữa, chỉ còn Giai đoạn 1):
   Nameservers → Custom DNS → dán 2 NS → lưu).
 - Kết quả hiện ngay tại chỗ dưới form, không nhảy trang khác.
 - **Giai đoạn 2** (thêm DNS record) tạm ẩn khỏi web — khi cần thì chạy
-  bằng dòng lệnh, xem mục 1 (`--phase 2`, 3 ô Type/Name/Content,
+  bằng dòng lệnh, xem mục 2 (`--phase 2`, 3 ô Type/Name/Content,
   ô nào trống thì bỏ qua; hỗ trợ A, AAAA, CNAME, TXT, MX).
-- Bấm **Chạy bằng Chrome**: tool tự mở Chrome bằng đúng profile của bạn
-  (đã đăng nhập sẵn) và tự click. Bạn không cần thao tác gì, chỉ ngồi xem.
-  Chạy xong Chrome vẫn mở để bạn kiểm tra lại.
-
-**Cách chạy (chọn 1 trong 2 — đừng vừa mở web bằng Chrome vừa bắt đóng Chrome):**
-- **Cách 1 (khuyên dùng):** đóng Chrome → double-click `start-chrome.bat`
-  (Mac/Linux: `bash start-chrome.sh`) → Chrome mở lại, vẫn đăng nhập sẵn.
-  Mở web `http://127.0.0.1:8000` trong Chrome đó, dán domain, bấm Chạy —
-  tool nối vào Chrome đang mở và tự làm, bạn xem trực tiếp luôn.
-- **Cách 2:** mở web bằng Edge (Windows có sẵn), đóng hẳn Chrome, bấm Chạy
-  trong Edge — tool tự mở Chrome làm việc.
-- Lưu ý: nếu Chrome thường đang mở sẵn mà không bật cổng debug, tool sẽ
-  báo dừng lại — vì profile bị khóa, tool chỉ mở được 1 cửa sổ about:blank
-  trắng rồi đứng im.
+- Bấm **Chạy bằng Chrome**: tool tự mở Chrome từ bản copy profile (vẫn
+  đăng nhập sẵn) và tự click. Bạn không cần thao tác gì, chỉ ngồi xem.
+  Chrome thật cứ mở bình thường, không cần đóng. Chạy xong Chrome vẫn mở
+  để bạn kiểm tra lại.
 
 Nếu phiên đăng nhập hết hạn (Cloudflare/Namecheap bắt đăng nhập lại),
-tool sẽ dừng và nhắn trong cửa sổ terminal: bạn đăng nhập ngay trong cửa
-sổ Chrome đó rồi nhấn Enter, tool chạy tiếp. Chỉ cần 1 lần đó.
+tool sẽ mở tab và đợi bạn đăng nhập trong cửa sổ Chrome đó — đăng nhập
+xong là tool tự chạy tiếp, không cần bấm gì. Quá 5 phút chưa đăng nhập
+thì tool báo lỗi.
 
 ---
 
@@ -58,11 +71,11 @@ Tự động làm tay 5 bước cho mỗi domain:
    Nếu 1 bước kẹt vì giao diện đổi nút, tool chụp màn hình vào `reports/`
    rồi chạy tiếp domain khác — mở ảnh đó lên là biết nó kẹt ở đâu.
 
-## 1. Chạy bằng dòng lệnh (không cần mở web)
+## 2. Chạy bằng dòng lệnh (không cần mở web)
 
 ```bash
 # GIAI ĐOẠN 1: nhập full domain, chạy hàng loạt tới bước 3
-# (nhớ đóng Chrome trước, tool sẽ tự mở Chrome đã đăng nhập)
+# (không cần đóng Chrome — tool tự copy profile rồi mở Chrome từ bản copy)
 python3 chrome_setup.py --domains-file domains.txt --phase 1 --dry-run
 python3 chrome_setup.py --domains-file domains.txt --phase 1
 
@@ -80,14 +93,14 @@ python3 chrome_setup.py --domain example.com --phase all --preset shopify
 Các flag khác: `--preset shopify|vps|vercel|only-ns`, `--target-ip 1.2.3.4`
 (cho preset vps), `--only-cloudflare`, `--only-namecheap`, `--keep-open`.
 
-## 2. Preset
+## 3. Preset
 
 Sửa trong `presets.yaml`: `shopify`, `vps`, `vercel`, `only-ns` có sẵn.
 
 Chú ý preset Shopify trong file mẫu: `shops.myshopify.com` là placeholder,
 phải sửa thành domain `.myshopify.com` thật.
 
-## 3. Giới hạn cần biết
+## 4. Giới hạn cần biết
 
 - Cloudflare: tối đa ~25 zone mới / 10 phút. Nếu tài khoản đã có >50 domain
   mà số zone pending nhiều hơn số zone active thì sẽ bị chặn thêm zone mới —
@@ -104,7 +117,7 @@ phải sửa thành domain `.myshopify.com` thật.
   nhiều cách tìm nút dự phòng, nhưng nếu 1 bước không tìm được nút, nó sẽ
   chụp màn hình vào `reports/` và dừng ở domain đó.
 
-## 4. Bản API cũ (chỉ dùng khi muốn chạy không cần mở Chrome)
+## 5. Bản API cũ (chỉ dùng khi muốn chạy không cần mở Chrome)
 
 Bản này CẦN key, giữ lại ở `setup_domain.py` + `web_app_api.py`:
 - Cloudflare API Token (quyền Zone:Edit + DNS:Edit)

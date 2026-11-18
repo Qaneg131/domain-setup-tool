@@ -5,11 +5,14 @@ KHÔNG cần API key / token gì hết. Không cần nhập mật khẩu vào to
 
 Cách nó chạy:
   1. Tool nối vào Chrome đang mở ở máy bạn (đã đăng nhập sẵn Cloudflare
-     + Namecheap), qua cổng remote-debugging 9222.
-     - Nếu Chrome chưa bật cổng đó, tool tự mở Chrome bằng đúng profile
-       thật của bạn (nên vẫn đăng nhập sẵn) — lúc đó bạn cần ĐÓNG Chrome
-       trước rồi chạy tool, tool sẽ tự mở lại.
-  2. Tool tự click thay bạn, y như bạn làm tay:
+     + Namecheap), qua cổng remote-debugging 9222 — nếu bạn chạy
+     start-chrome.bat/.sh trước.
+     - Nếu không, tool TỰ COPY profile Chrome sang thư mục tạm rồi mở
+       Chrome từ bản copy đó (vẫn đăng nhập sẵn, vì cookie mã hoá theo
+       tài khoản Windows của chính máy đó). Chrome thật của bạn cứ mở
+       bình thường, KHÔNG cần đóng gì hết. Chạy xong bản copy được xoá.
+  2. Tool tự click thay bạn, y như bạn làm tay (tab làm việc mở riêng và
+     đưa lên trước để bạn xem trực tiếp):
      Phase 1: Cloudflare Add site (Free) -> lấy 2 nameserver
               -> Namecheap Manage domain -> Nameservers -> Custom DNS
               -> dán 2 NS -> lưu (tới bước 3)
@@ -17,12 +20,10 @@ Cách nó chạy:
               (3 ô Type/Name/Content, ô nào trống thì bỏ qua)
   3. Verify NS bằng DNS 1.1.1.1 + ghi CSV vào reports/
 
-Chạy 1 lần duy nhất ở máy bạn (xem README):
+Chạy ở máy bạn (xem README, khuyên dùng app desktop: run-app.bat):
     pip install -r requirements.txt
     playwright install chromium   # chỉ cần 1 lần, để có driver Playwright
-    # Cách A (khuyên dùng): đóng Chrome, rồi chạy tool — tool tự mở Chrome đã đăng nhập
     python3 chrome_setup.py --domains-file domains.txt --phase 1
-    # Cách B: mở Chrome sẵn với cổng debug rồi chạy tool (xem start-chrome.bat/.sh)
     python3 chrome_setup.py --domains-file domains.txt --phase 2 --records-file custom-records.json
 
 Lưu ý: giao diện Cloudflare/Namecheap thỉnh thoảng đổi nút/chữ. Tool dùng
@@ -36,8 +37,10 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -138,6 +141,81 @@ def chrome_already_running():
     return False
 
 
+# ------------------------------------------------------- copy profile Chrome
+# Vấn đề gốc: Chrome khoá profile đang dùng, nên tool không thể mở Chrome
+# bằng profile thật khi Chrome của user đang mở — chỉ hiện about:blank rồi kẹt.
+# Cách sửa: COPY profile sang thư mục tạm rồi mở Chrome từ bản copy đó.
+# Cookie Chrome mã hoá gắn với tài khoản Windows của chính máy đó, nên bản
+# copy mở lên vẫn đăng nhập sẵn Cloudflare + Namecheap như Chrome thật.
+# Chrome thật của user cứ mở bình thường, không cần đóng gì hết.
+COPY_SKIP_DIRS = {"Cache", "Code Cache", "GPUCache", "Service Worker",
+                  "File System", "blob_storage", "Crashpad", "ShaderCache",
+                  "DawnCache", "GraphiteDawnCache", "Sessions",
+                  "optimization_guide_model_store", "DownloadService"}
+COPY_SKIP_FILES = {"SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK"}
+
+
+def cleanup_stale_copies(max_age_hours=24):
+    """Xoá các bản copy profile cũ hơn 1 ngày trong thư mục tạm."""
+    try:
+        tmp = Path(tempfile.gettempdir())
+        now = time.time()
+        for d in tmp.glob("domain-chrome-profile-*"):
+            try:
+                if d.is_dir() and now - d.stat().st_mtime > max_age_hours * 3600:
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def prepare_profile_copy(profile_dir):
+    """Copy profile Chrome thật -> thư mục tạm. Trả về đường dẫn bản copy,
+    hoặc None nếu không copy được (sẽ dùng profile thật như cũ)."""
+    src = Path(profile_dir)
+    if not src.exists():
+        log(f"  Không thấy profile Chrome ở {src}")
+        return None
+    cleanup_stale_copies()
+    dst = Path(tempfile.mkdtemp(prefix="domain-chrome-profile-"))
+    copied = [0]
+    skipped = []
+
+    def tolerant_copy(s, d):
+        try:
+            shutil.copy2(s, d)
+            copied[0] += 1
+        except Exception as e:
+            # File đang bị Chrome khoá/ghi dở (vd Cookies) -> bỏ qua file đó,
+            # không crash cả quá trình copy.
+            skipped.append(f"{Path(s).name}: {e}")
+
+    # Local State chứa khoá mã hoá cookie — bắt buộc phải có để giữ đăng nhập.
+    local_state = src / "Local State"
+    default_src = src / "Default"
+    if not local_state.exists() and not default_src.exists():
+        log(f"  Profile Chrome ở {src} trống/không có gì để copy — bỏ qua bản copy.")
+        shutil.rmtree(dst, ignore_errors=True)
+        return None
+    if local_state.exists():
+        tolerant_copy(str(local_state), str(dst / "Local State"))
+    if default_src.exists():
+        def ignore(d, names):
+            return [n for n in names
+                    if n in COPY_SKIP_DIRS or n in COPY_SKIP_FILES]
+        try:
+            shutil.copytree(default_src, dst / "Default", ignore=ignore,
+                            copy_function=tolerant_copy)
+        except Exception as e:
+            log(f"  Copy profile lỗi: {e}")
+            return None
+    log(f"  Đã copy profile Chrome sang thư mục tạm ({copied[0]} file)"
+        + (f", bỏ qua {len(skipped)} file đang khoá" if skipped else "")
+        + " — Chrome thật của bạn vẫn mở bình thường, không cần đóng.")
+    return str(dst)
+
+
 # ---------------------------------------------------------------- helpers click
 def click_first(page, description, timeout=8000, **locators):
     """Thử lần lượt nhiều cách tìm nút, cái nào thấy thì click cái đó."""
@@ -222,28 +300,35 @@ def doh_ns(domain):
 
 
 # ---------------------------------------------------------------- login check
-def ensure_logged_in(page, site, start_url, login_markers):
-    page.goto(start_url, wait_until="domcontentloaded")
-    page.wait_for_timeout(2500)
-    body = ""
-    try:
-        body = page.content().lower()
-    except Exception:
-        pass
-    url = page.url.lower()
-    if any(m in url for m in ("login", "sign-in", "signin")) or \
-       any(m in body for m in login_markers):
-        log(f"  !! Chưa đăng nhập {site} ở Chrome này.")
-        log(f"     Hãy đăng nhập {site} NGAY TRONG cửa sổ Chrome vừa mở,")
-        log("     rồi quay lại đây nhấn Enter để tool chạy tiếp (chỉ cần 1 lần này).")
-        try:
-            input("     Nhấn Enter sau khi đã đăng nhập xong... ")
-        except EOFError:
-            pass
+def ensure_logged_in(page, site, start_url, login_markers, wait_minutes=5):
+    # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
+    # Thay vào đó tự kiểm tra mỗi 5 giây — user đăng nhập xong trong cửa sổ
+    # Chrome vừa mở là tool tự chạy tiếp. Quá 5 phút vẫn chưa đăng nhập thì lỗi.
+    deadline = time.time() + wait_minutes * 60
+    warned = False
+    while True:
         page.goto(start_url, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
-    else:
-        log(f"  đã đăng nhập {site} (Chrome sẵn).")
+        body = ""
+        try:
+            body = page.content().lower()
+        except Exception:
+            pass
+        url = page.url.lower()
+        needs_login = any(m in url for m in ("login", "sign-in", "signin")) or \
+            any(m in body for m in login_markers)
+        if not needs_login:
+            log(f"  đã đăng nhập {site} (Chrome sẵn).")
+            return
+        if time.time() > deadline:
+            raise RuntimeError(f"chưa đăng nhập {site} sau {wait_minutes} phút — "
+                               "hãy đăng nhập trong cửa sổ Chrome rồi chạy lại")
+        if not warned:
+            log(f"  !! Chưa đăng nhập {site} ở Chrome này.")
+            log("     Hãy đăng nhập NGAY TRONG cửa sổ Chrome vừa mở,")
+            log("     tool sẽ tự chạy tiếp khi thấy đã đăng nhập (không cần bấm gì).")
+            warned = True
+        page.wait_for_timeout(5000)
 
 
 # ---------------------------------------------------------------- Cloudflare
@@ -648,6 +733,7 @@ def main():
           + (" | DRY-RUN (không đổi gì thật)" if args.dry_run else ""))
 
     results = []
+    profile_copy = None
     with sync_playwright() as p:
         browser = None
         context = None
@@ -658,23 +744,26 @@ def main():
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             cdp_mode = True
         else:
+            # KHÔNG bắt user đóng Chrome nữa. Chrome thật cứ mở bình thường;
+            # tool mở Chrome từ BẢN COPY profile (vẫn đăng nhập sẵn) nên không
+            # bị khoá profile, không hiện about:blank rồi kẹt.
             if chrome_already_running():
-                log("!! Chrome ĐANG MỞ SẴN ở máy bạn, nên tool không mở được Chrome riêng.")
-                log("   Cửa sổ about:blank vừa hiện là Chrome cũ mở thêm, tool không")
-                log("   điều khiển được nó — đó là lý do trang đứng im không chạy.")
-                log("   Cách sửa: ĐÓNG HẾT mọi cửa sổ Chrome (kể cả Chrome chạy ẩn dưới")
-                log("   khay hệ thống — chuột phải icon Chrome ở khay -> Thoát), rồi bấm")
-                log("   Chạy lại. Hoặc chạy start-chrome.bat trước để mở Chrome với cổng")
-                log("   debug, rồi bấm Chạy (tool sẽ nối vào Chrome đó).")
-                sys.exit(3)
-            log("Chrome chưa bật cổng debug — tool sẽ tự mở Chrome bằng profile thật của bạn.")
+                log("Chrome của bạn đang mở sẵn — không sao, tool dùng bản copy")
+                log("profile nên không cần đóng Chrome.")
+            profile_copy = prepare_profile_copy(profile)
+            use_dir = profile_copy or profile
+            if profile_copy:
+                log("Chrome chưa bật cổng debug — tool sẽ mở Chrome từ bản copy profile.")
+            else:
+                log("Không copy được profile — thử mở Chrome bằng profile thật.")
+                log("(Nếu báo 'profile đang được dùng', hãy đóng hết Chrome rồi chạy lại.)")
             try:
                 # chromium_sandbox=True: Playwright mặc định tắt sandbox của Chrome
                 # (--no-sandbox) nên Chrome hiện cảnh báo "cờ dòng lệnh không được
                 # hỗ trợ". Bật sandbox lại thì hết cảnh báo, Chrome chạy như bình thường.
                 # (Đã bỏ --disable-blink-features=AutomationControlled vì Chrome
                 # cũng báo cờ đó không được hỗ trợ.)
-                kwargs = dict(user_data_dir=profile, headless=False,
+                kwargs = dict(user_data_dir=use_dir, headless=False,
                               chromium_sandbox=True,
                               args=["--no-first-run"],
                               viewport={"width": 1280, "height": 900},
@@ -686,7 +775,7 @@ def main():
                 context = p.chromium.launch_persistent_context(**kwargs)
             except Exception as e:
                 log(f"LỖI mở Chrome: {e}")
-                log("Cách sửa: đóng hết Chrome rồi chạy lại. Hoặc chạy start-chrome.bat/.sh trước, rồi chạy tool.")
+                log("Cách sửa: chạy start-chrome.bat/.sh trước, rồi chạy tool.")
                 sys.exit(2)
         # Tab làm việc: mở tab mới RIÊNG cho tool và đưa lên trước để user
         # xem trực tiếp từng bước. Không chiếm tab web UI hay tab khác của user,
@@ -713,6 +802,9 @@ def main():
                     context.close()
                 except Exception:
                     pass
+                # Xoá bản copy profile tạm (Chrome đã đóng nên xoá được).
+                if profile_copy:
+                    shutil.rmtree(profile_copy, ignore_errors=True)
             elif cdp_mode:
                 try:
                     browser.close()  # chỉ ngắt kết nối, không đóng Chrome của bạn

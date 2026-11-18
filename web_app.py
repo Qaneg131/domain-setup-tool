@@ -68,6 +68,7 @@ pre{background:#16130f;color:#f5f2ed;padding:12px;border-radius:6px;white-space:
 <h1>Domain Setup — Namecheap → Cloudflare</h1>
 <p class="note"><b>Chạy bằng Chrome đã đăng nhập — không cần key/token gì hết.</b>
 <br>Web nội bộ ở http://127.0.0.1:8000, chỉ ở máy bạn.
+<br>Khuyên dùng app desktop thay cho web: double-click <code>run-app.bat</code> trong thư mục tool.
 <br>Dán full domain, chạy hàng loạt tới bước 3 (tạo zone + đổi NS).
 <br><b>Cách chạy (chọn 1 trong 2):</b>
 <br>1. Đóng hết Chrome, chạy <code>start-chrome.bat</code> — Chrome mở lại (vẫn đăng nhập sẵn). Mở trang này trong Chrome đó, dán domain, bấm Chạy. Tool nối vào Chrome đang mở và tự làm, bạn xem trực tiếp luôn.
