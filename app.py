@@ -32,6 +32,14 @@ try:
 except Exception:
     pass
 
+# Đọc danh sách hồ sơ Chrome để user chọn đúng hồ sơ đã đăng nhập.
+try:
+    sys.path.insert(0, str(BASE_DIR))
+    from chrome_setup import default_profile_dir, list_chrome_profiles
+    _PROFILES, _LAST_USED = list_chrome_profiles(default_profile_dir())
+except Exception:
+    _PROFILES, _LAST_USED = [], None
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -53,6 +61,26 @@ class App(tk.Tk):
         self.domains_box = scrolledtext.ScrolledText(self, height=7, font=("Consolas", 11))
         self.domains_box.pack(padx=12, fill="x")
         self.domains_box.insert("1.0", "elvellia.com\nwelvella.com")
+
+        # Chọn hồ sơ Chrome: trước đây tool luôn lấy 'Default' nên mở lộn hồ sơ
+        # nếu bạn đăng nhập Cloudflare/Namecheap ở hồ sơ khác (vd 'Profile 1').
+        prof_row = ttk.Frame(self)
+        prof_row.pack(padx=12, pady=(8, 0), fill="x")
+        ttk.Label(prof_row, text="Hồ sơ Chrome:").pack(side="left")
+        self.profile_map = {f"{name} ({d})": d for d, name in _PROFILES}
+        self.profile_box = ttk.Combobox(prof_row, state="readonly", width=40,
+                                        values=list(self.profile_map.keys()))
+        self.profile_box.pack(side="left", padx=(6, 0))
+        if _PROFILES:
+            default_key = next((k for k, d in self.profile_map.items() if d == _LAST_USED),
+                               list(self.profile_map.keys())[0])
+            self.profile_box.set(default_key)
+        else:
+            self.profile_box.set("Default (không tìm thấy hồ sơ — sẽ dùng Default)")
+            self.profile_box.configure(state="disabled")
+        ttk.Label(self, text="Chọn đúng hồ sơ bạn hay dùng để đăng nhập Cloudflare / Namecheap. "
+                  "Sai hồ sơ thì Chrome mở lên sẽ không đăng nhập sẵn.",
+                  wraplength=740, foreground="#666").pack(padx=12, anchor="w")
 
         row = ttk.Frame(self)
         row.pack(padx=12, pady=8, fill="x")
@@ -117,6 +145,9 @@ class App(tk.Tk):
         dom_file.write_text("\n".join(domains) + "\n", encoding="utf-8")
         cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"),
                "--domains-file", str(dom_file), "--phase", "1", "--keep-open"]
+        chosen = self.profile_map.get(self.profile_box.get())
+        if chosen:
+            cmd += ["--profile-dir", chosen]
         if self.dry_run.get():
             cmd.append("--dry-run")
         self.thread = threading.Thread(target=self.run_worker, args=(cmd,), daemon=True)

@@ -155,6 +155,36 @@ COPY_SKIP_DIRS = {"Cache", "Code Cache", "GPUCache", "Service Worker",
 COPY_SKIP_FILES = {"SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK"}
 
 
+def list_chrome_profiles(profile_root):
+    """Liệt kê các hồ sơ Chrome trong thư mục User Data.
+    Trả về (danh_sách, last_used) với danh_sách = [(thư_mục, tên_hiển_thị)].
+    Tên hiển thị lấy từ Local State (profile.info_cache) — chính là tên
+    hiện trong menu đổi hồ sơ của Chrome. last_used là hồ sơ dùng gần nhất.
+    """
+    root = Path(profile_root)
+    profiles = []
+    last_used = None
+    try:
+        ls = root / "Local State"
+        if ls.exists():
+            data = json.loads(ls.read_text(encoding="utf-8"))
+            prof = data.get("profile", {}) or {}
+            last_used = prof.get("last_used")
+            cache = prof.get("info_cache", {}) or {}
+            for dirname, info in cache.items():
+                if (root / dirname).is_dir():
+                    profiles.append((dirname, (info or {}).get("name") or dirname))
+    except Exception:
+        pass
+    if not profiles:
+        for d in sorted(root.iterdir()) if root.exists() else []:
+            if d.is_dir() and (d.name == "Default" or d.name.startswith("Profile ")):
+                profiles.append((d.name, d.name))
+    if last_used not in [p[0] for p in profiles]:
+        last_used = profiles[0][0] if profiles else None
+    return profiles, last_used
+
+
 def cleanup_stale_copies(max_age_hours=24):
     """Xoá các bản copy profile cũ hơn 1 ngày trong thư mục tạm."""
     try:
@@ -170,10 +200,12 @@ def cleanup_stale_copies(max_age_hours=24):
         pass
 
 
-def prepare_profile_copy(profile_dir):
-    """Copy profile Chrome thật -> thư mục tạm. Trả về đường dẫn bản copy,
-    hoặc None nếu không copy được (sẽ dùng profile thật như cũ)."""
-    src = Path(profile_dir)
+def prepare_profile_copy(profile_root, profile_name="Default"):
+    """Copy 1 hồ sơ Chrome thật -> thư mục tạm, đặt thành Default trong bản
+    copy để Chrome mở lên dùng đúng hồ sơ đó. Trả về đường dẫn bản copy,
+    hoặc None nếu không copy được (sẽ dùng profile thật như cũ).
+    profile_name là tên thư mục hồ sơ, vd 'Default' hay 'Profile 1'."""
+    src = Path(profile_root)
     if not src.exists():
         log(f"  Không thấy profile Chrome ở {src}")
         return None
@@ -193,24 +225,38 @@ def prepare_profile_copy(profile_dir):
 
     # Local State chứa khoá mã hoá cookie — bắt buộc phải có để giữ đăng nhập.
     local_state = src / "Local State"
-    default_src = src / "Default"
-    if not local_state.exists() and not default_src.exists():
+    chosen_src = src / profile_name
+    if not local_state.exists() and not chosen_src.exists():
         log(f"  Profile Chrome ở {src} trống/không có gì để copy — bỏ qua bản copy.")
         shutil.rmtree(dst, ignore_errors=True)
         return None
     if local_state.exists():
         tolerant_copy(str(local_state), str(dst / "Local State"))
-    if default_src.exists():
+    if chosen_src.exists():
         def ignore(d, names):
             return [n for n in names
                     if n in COPY_SKIP_DIRS or n in COPY_SKIP_FILES]
         try:
-            shutil.copytree(default_src, dst / "Default", ignore=ignore,
+            shutil.copytree(chosen_src, dst / "Default", ignore=ignore,
                             copy_function=tolerant_copy)
         except Exception as e:
             log(f"  Copy profile lỗi: {e}")
             return None
-    log(f"  Đã copy profile Chrome sang thư mục tạm ({copied[0]} file)"
+    # Sửa Local State trong bản copy: bảo Chrome mở Default (chính là hồ sơ
+    # vừa copy sang), tránh trường hợp nó mở hồ sơ khác còn ghi trong file.
+    try:
+        ls_path = dst / "Local State"
+        if ls_path.exists():
+            data = json.loads(ls_path.read_text(encoding="utf-8"))
+            prof = data.setdefault("profile", {})
+            info = (prof.get("info_cache", {}) or {}).get(profile_name, {}) or {}
+            prof["info_cache"] = {"Default": info if info.get("name") else {"name": profile_name}}
+            prof["last_used"] = "Default"
+            prof["last_active_profiles"] = ["Default"]
+            ls_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    log(f"  Đã copy hồ sơ Chrome '{profile_name}' sang thư mục tạm ({copied[0]} file)"
         + (f", bỏ qua {len(skipped)} file đang khoá" if skipped else "")
         + " — Chrome thật của bạn vẫn mở bình thường, không cần đóng.")
     return str(dst)
@@ -702,6 +748,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--cdp-port", type=int, default=CDP_PORT)
     ap.add_argument("--profile", help="Đường dẫn profile Chrome (mặc định tự tìm)")
+    ap.add_argument("--profile-dir", help="Hồ sơ Chrome cần dùng, vd 'Default' hay 'Profile 1' (mặc định: hồ sơ dùng gần nhất)")
     ap.add_argument("--chrome-path", help="Đường dẫn chrome.exe")
     ap.add_argument("--only-cloudflare", action="store_true")
     ap.add_argument("--only-namecheap", action="store_true")
@@ -727,7 +774,21 @@ def main():
 
     profile = args.profile or str(default_profile_dir())
     chrome_exe = args.chrome_path or default_chrome_exe()
+    # Chọn hồ sơ Chrome: user chỉ định > hồ sơ dùng gần nhất > Default.
+    # (Trước đây tool luôn copy 'Default' nên mở lộn hồ sơ nếu user đăng
+    # nhập Cloudflare/Namecheap ở hồ sơ khác, vd 'Profile 1'.)
+    profiles, last_used = list_chrome_profiles(profile)
+    if args.profile_dir:
+        profile_dir_name = args.profile_dir
+    elif last_used:
+        profile_dir_name = last_used
+    else:
+        profile_dir_name = "Default"
+    display = dict(profiles).get(profile_dir_name, profile_dir_name)
     log(f"Profile Chrome: {profile}")
+    if profiles:
+        log(f"Hồ sơ dùng: {display} ({profile_dir_name}) — có {len(profiles)} hồ sơ: "
+            + ", ".join(f"{n} ({d})" for d, n in profiles))
     log(f"Chrome: {chrome_exe or '(dùng channel chrome của Playwright)'}")
     log(f"Domain ({len(domains)}): {', '.join(domains)} | Phase {args.phase}"
           + (" | DRY-RUN (không đổi gì thật)" if args.dry_run else ""))
@@ -750,7 +811,7 @@ def main():
             if chrome_already_running():
                 log("Chrome của bạn đang mở sẵn — không sao, tool dùng bản copy")
                 log("profile nên không cần đóng Chrome.")
-            profile_copy = prepare_profile_copy(profile)
+            profile_copy = prepare_profile_copy(profile, profile_dir_name)
             use_dir = profile_copy or profile
             if profile_copy:
                 log("Chrome chưa bật cổng debug — tool sẽ mở Chrome từ bản copy profile.")

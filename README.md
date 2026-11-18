@@ -26,6 +26,11 @@ kết quả ngay trong app. Không cần mở web, không cần đóng Chrome:
   đăng nhập trong cửa sổ Chrome đó — đăng nhập xong là tool tự chạy tiếp,
   không cần bấm gì. Quá 5 phút chưa đăng nhập thì tool báo lỗi.
 - Tab làm việc mở riêng và đưa lên trước để bạn xem trực tiếp từng bước.
+- **Mở lộn hồ sơ?** Nếu bạn có nhiều hồ sơ Chrome (vd vừa "Default" vừa
+  "Profile 1"), chọn đúng hồ sơ hay dùng để đăng nhập Cloudflare /
+  Namecheap ở ô **Hồ sơ Chrome** trong app (mặc định app chọn hồ sơ bạn
+  dùng gần nhất). Sai hồ sơ thì Chrome mở lên sẽ không đăng nhập sẵn —
+  lúc đó cứ đăng nhập trong cửa sổ đó, tool sẽ tự chạy tiếp.
 
 ## 1. Web nội bộ (cách cũ, vẫn dùng được)
 
