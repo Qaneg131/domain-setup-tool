@@ -42,17 +42,19 @@ except Exception:
 # Đọc danh sách hồ sơ Chrome để user chọn đúng hồ sơ đã đăng nhập.
 try:
     sys.path.insert(0, str(BASE_DIR))
-    from chrome_setup import default_profile_dir, list_chrome_profiles, tool_profile_dir
+    from chrome_setup import default_profile_dir, list_chrome_profiles, tool_profile_dir, tool_version
     _PROFILES, _LAST_USED = list_chrome_profiles(default_profile_dir())
+    _VERSION = tool_version()
 except Exception:
     _PROFILES, _LAST_USED = [], None
     tool_profile_dir = None
+    _VERSION = "?"
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Domain Setup — Namecheap → Cloudflare")
+        self.title(f"Domain Setup — Namecheap → Cloudflare (bản {_VERSION})")
         self.geometry("780x680")
         self.proc = None
         self.thread = None
@@ -60,6 +62,11 @@ class App(tk.Tk):
 
         ttk.Label(self, text="Domain Setup — Namecheap → Cloudflare",
                   font=("Segoe UI", 14, "bold")).pack(padx=12, pady=(12, 2), anchor="w")
+        # Hiện rõ bản đang chạy ngay trên cửa sổ để khỏi nhầm bản cũ
+        # với bản mới (nhiều lần user chạy lại vẫn là bản cũ vì chưa
+        # pull mà không biết — đối chiếu với số mình báo trong chat).
+        ttk.Label(self, text=f"Bản đang chạy: {_VERSION}",
+                  foreground="gray").pack(padx=12, pady=(0, 2), anchor="w")
         ttk.Label(self, text="Bước 1: bấm nút 1 để mở 2 tab đăng nhập, đăng nhập xong "
                   "Cloudflare + Namecheap. Bước 2: bấm nút 2 để chạy hàng loạt "
                   "tới bước 3 (tạo zone + đổi NS). Không cần key, không cần đóng Chrome.",
