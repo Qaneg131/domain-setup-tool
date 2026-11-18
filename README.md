@@ -16,6 +16,11 @@ playwright install chromium   # 1 lần duy nhất, để có driver Playwright
 
 Rồi double-click **`run-app.bat`** (hoặc chạy `python app.py`).
 
+Mỗi lần có bản sửa mới: double-click **`cap-nhat.bat`** (nó tự `git pull`
+và hiện 3 commit mới nhất — dòng đầu tiên phải là bản mới nhất), rồi mới
+mở lại app. App cũ đang chạy thì file mới chưa có tác dụng — phải tắt app
+cũ đi, cập nhật xong rồi mở lại.
+
 App hiện 1 cửa sổ: dán full domain, làm 2 bước, xem log + kết quả ngay
 trong app. Không cần mở web, không cần đóng Chrome:
 - **Nút 1 "Mở tab đăng nhập":** mở Chrome (bản copy profile) với 2 tab
