@@ -1324,8 +1324,44 @@ def _select_custom_dns(page):
 
 def _click_save_ns(page):
     """Bấm nút lưu NS ở Namecheap: dấu tick xanh (✓) bên phải mục
-    Nameservers (ảnh user gửi). Nút này có thể mang title/aria 'Save',
-    chữ '✓'/'✔', hoặc chỉ có icon — thử nhiều cách, và tránh nút X (huỷ)."""
+    Nameservers (ảnh user gửi). HTML THẬT (user gửi 2026-11-19): tick
+    xanh là link <a class="save">Save</a> (chữ "Save" bị ẩn, chỉ hiện
+    icon tick bằng CSS) nằm trong <div class="inline-actions"> cùng với
+    <a class="cancel">Cancel</a> — KHÔNG phải <button>, KHÔNG có chữ
+    ✓ nào trong DOM nên mọi cách tìm nút/chữ ✓ trước đây đều trượt.
+    Vì vậy bấm thẳng link class 'save' này trước tiên."""
+    # Nhanh 0 (dang that): link <a class="save"> — uu tien cai nam cung
+    # o voi <a class="cancel"> (cap Save/Cancel cua muc Nameservers).
+    try:
+        clicked = page.evaluate("""() => {
+            // Chi can rong > 0 (khong can cao > 0): chu "Save" bi an
+            // nen hop cua link co the suy bien (cao = 0) nhung click
+            // bang JS van kich hoat duoc. display:none van loai duoc
+            // vi no co rong = 0.
+            const isVis = e => {
+              const r = e.getBoundingClientRect();
+              return r.width > 0 &&
+                getComputedStyle(e).visibility !== 'hidden';
+            };
+            const hasCls = (e, c) => e.classList && e.classList.contains(c);
+            const cancels = [...document.querySelectorAll('a, button, [role=button]')]
+              .filter(e => isVis(e) && hasCls(e, 'cancel'));
+            for (const c of cancels) {
+              const p = c.parentElement;
+              if (!p) continue;
+              const s = [...p.querySelectorAll('a, button, [role=button]')]
+                .find(e => hasCls(e, 'save'));
+              if (s && isVis(s)) { s.click(); return true; }
+            }
+            const saves = [...document.querySelectorAll('a, button, [role=button]')]
+              .filter(e => isVis(e) && hasCls(e, 'save'));
+            if (saves.length) { saves[0].click(); return true; }
+            return false;
+        }""")
+        if clicked:
+            return True
+    except Exception:
+        pass
     for sel in ["button[title='Save']", "button[aria-label='Save']",
                 "button[title*='Save' i]", "button[aria-label*='Save' i]",
                 "button:has-text('✓')", "button:has-text('✔')",
@@ -1400,6 +1436,9 @@ def _click_save_ns(page):
             const isX = e => {
               const t = (e.textContent || '').trim();
               if (['\\u00d7', '\\u2717', '\\u2715'].includes(t)) return true;
+              // Nut X that ra la <a class="cancel">Cancel</a> — chu la
+              // 'Cancel' (khong phai ky tu ✗), nhan dang qua class.
+              if (e.classList && e.classList.contains('cancel')) return true;
               const al = ((e.getAttribute('aria-label') || '') + ' ' + (e.title || '')).toLowerCase();
               return /cancel/.test(al);
             };
@@ -1417,8 +1456,8 @@ def _click_save_ns(page):
               return true;
             }
             // Nhanh 3: trong muc Nameservers, nut co class/id/aria
-            // mang nghia luu (check/tick/ok) — phong khi tick xanh chi
-            // la icon SVG, khong co chu nao de nhan dang.
+            // mang nghia luu (save/check/tick/ok) — phong khi tick xanh
+            // chi la icon SVG, khong co chu nao de nhan dang.
             const inp = document.querySelector("input[placeholder*='Nameserver' i]");
             if (inp) {
               let sec = inp;
@@ -1427,7 +1466,7 @@ def _click_save_ns(page):
                 if (!isVis(e)) return false;
                 const s = ((e.className && String(e.className)) || '') + ' ' + (e.id || '') + ' ' +
                   (e.getAttribute('aria-label') || '') + ' ' + (e.title || '');
-                return /check|tick|\\bok\\b/i.test(s);
+                return /save|check|tick|\\bok\\b/i.test(s);
               });
               if (cands.length) { cands[0].click(); return true; }
             }
