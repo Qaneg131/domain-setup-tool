@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Test cac fix 2026-11-19 tren Chromium that (mock HTML + route):
-(a) namecheap_set_ns: xac minh sau luu POLL toi 15s (trang SPA render cham)
-    thay vi check 1 lan sau 2.5s — mock cho NS hien sau 4s.
+(a) namecheap_set_ns: xac minh sau luu POLL toi 20s, check innerText (chu
+    hien thi) thay vi chi page.content() — mock cho NS hien sau 4s, ca
+    truong hop NS tach thanh nhieu <span>.
 (b) cloudflare_add_site: het 30s khong thay 'Continue to activation' thi
     chay lai bang link add-site -> domain da set -> trang Update nameservers.
 (c) _read_current_ns: doc NS hien tai o trang Manage.
@@ -66,6 +67,34 @@ MANAGE_POLLUTED = f"""<html><body><h2>Nameservers</h2>
 <select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
 <div>redirect domain</div><div>alert</div>
 <div>{NS1}</div><div>{NS2}</div></body></html>"""
+
+# Dau cham cuoi cau ('account.' / 'default.' trong doan chu
+# '...your Namecheap account. ...to Namecheap default.') — loi chay that
+# 10:21 tra ve 'account.' / 'default.' thay vi 2 NS that. Chi nhan
+# hostname co TLD that, dau cham cuoi cau khong phai hostname.
+MANAGE_POLLUTED2 = f"""<html><body><h2>Nameservers</h2>
+<select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
+<div>You can create redirects via your DNS provider or your Namecheap account.</div>
+<div>To perform this function you must first change your nameservers to Namecheap default.</div>
+<div>{NS1}</div><div>{NS2}</div></body></html>"""
+
+# NS hien sau 4s NHUNG tach thanh nhieu <span> (trang that render kieu nay):
+# page.content() khong chua chuoi lien tuc 'brit.ns.cloudflare.com' trong
+# khi innerText (chu hien thi) van co — loi chay that 10:21 o welvella:
+# anh chup da thay 2 NS nhung check HTML tho van truot.
+MANAGE_DELAYED_SPLIT = f"""<html><body>
+<h2>Nameservers</h2>
+<select id="ns-type"><option>Namecheap BasicDNS</option>
+<option>Namecheap Web Hosting DNS</option><option>Custom DNS</option></select>
+<div class="ns-section">
+<input type="text" placeholder="Nameserver 1" value="">
+<input type="text" placeholder="Nameserver 2" value="">
+<div class="inline-actions"><a class="save" href="#" onclick="sessionStorage.setItem('saved','1');return false">Save</a>
+<a class="cancel" href="#">Cancel</a></div>
+<div id="saved-ns"></div></div>
+<script>setTimeout(() => {{
+  document.getElementById('saved-ns').innerHTML = '<span>brit</span><span>.ns.cloudflare.com</span> <span>langston</span><span>.ns.cloudflare.com</span>';
+}}, 4000);</script></body></html>"""
 
 CF_HOME = f"""<html><body><h1>Account home</h1><p>Domains</p>
 <script>if (location.pathname === '/') location.replace('https://dash.cloudflare.com/{ACCT}');</script>
@@ -158,7 +187,7 @@ def route_nc(page, html):
 
 
 def test_a(p):
-    print("TEST A: xac minh sau luu (NS hien sau 4s, poll 15s)...", flush=True)
+    print("TEST A: xac minh sau luu (NS hien sau 4s, poll 20s, check innerText)...", flush=True)
     b = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
     page = b.new_page()
     route_nc(page, MANAGE_DELAYED)
@@ -169,6 +198,17 @@ def test_a(p):
     assert page.evaluate("() => sessionStorage.getItem('saved')") == "1", "nut save chua duoc bam"
     print("  OK: tra ve 'saved' du NS hien cham 4s.", flush=True)
     b.close()
+    # NS tach thanh nhieu <span>: page.content() khong chua chuoi lien tuc,
+    # chi innerText (chu hien thi) moi thay — loi chay that 10:21 o welvella.
+    b2 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page2 = b2.new_page()
+    route_nc(page2, MANAGE_DELAYED_SPLIT)
+    out2 = cs.namecheap_set_ns(page2, "elvellia.com", [NS1, NS2],
+                               manage_url="https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert out2 == "saved", out2
+    assert NS1 not in page2.content(), "mock split khong dung: content() van chua NS lien tuc"
+    print("  OK: NS tach span van xac minh duoc qua innerText.", flush=True)
+    b2.close()
 
 
 def test_b(p):
@@ -230,6 +270,15 @@ def test_c(p):
     assert cs._ns_already_set(page6) == [NS1, NS2], cs._ns_already_set(page6)
     print("  OK: dong chu xen vao bi bo qua, lay dung 2 NS.", flush=True)
     b6.close()
+    # Dau cham cuoi cau ('account.' / 'default.'): khong phai hostname,
+    # chi nhan hostname co TLD that — loi chay that 10:21.
+    b7 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page7 = b7.new_page()
+    route_nc(page7, MANAGE_POLLUTED2)
+    page7.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert cs._ns_already_set(page7) == [NS1, NS2], cs._ns_already_set(page7)
+    print("  OK: 'account.' / 'default.' bi loai, lay dung 2 NS.", flush=True)
+    b7.close()
 
 
 def test_e(p):

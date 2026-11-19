@@ -798,7 +798,7 @@ def _cloudflare_account_id(page):
             return m.group(1)
         # Chưa ở URL có account ID: mở dash home để nó redirect rồi đọc lại.
         page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         m = re.search(r"dash\.cloudflare\.com/([0-9a-f]{32})", page.url or "")
         return m.group(1) if m else None
     except Exception:
@@ -1171,23 +1171,35 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
     # https://dash.cloudflare.com/<account-id>/<domain>/dns/records
     on_records = False
     acct = _cloudflare_account_id(page)
-    if acct:
+    if not acct:
+        log("    [chẩn đoán] không lấy được Cloudflare account ID từ URL — thử cách bấm.")
+    else:
+        # Link đúng và đã đăng nhập là vào được (user bấm tay vẫn vô);
+        # tab mới mở còn lạnh nên trang records load chậm — poll tới 10s
+        # thay vì check 1 lần sau 2.5s (lỗi chạy 2026-11-19 10:21 ở
+        # elvellia: link thẳng + cách bấm đều trượt).
         try:
             safe_goto(page, f"https://dash.cloudflare.com/{acct}/{domain}/dns/records", "trang DNS records")
-            page.wait_for_timeout(2500)
-            if _any_visible(page, "Add record") or _any_visible(page, "DNS records for"):
-                on_records = True
+            for _ in range(20):
+                if _any_visible(page, "Add record") or _any_visible(page, "DNS records for"):
+                    on_records = True
+                    break
+                page.wait_for_timeout(500)
+            if on_records:
                 log("    đã mở trang DNS records (link thẳng).")
+            else:
+                log(f"    [chẩn đoán] link thẳng không thấy 'Add record': url={page.url} title={page.title()!r}")
         except Exception:
             pass
     if not on_records:
         log("    link thẳng không mở được trang DNS records — thử cách bấm.")
         page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         try:
-            page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=8000)
+            page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=12000)
             page.wait_for_timeout(2500)
         except Exception:
+            log(f"    [chẩn đoán] cách bấm thất bại: url={page.url} title={page.title()!r}")
             raise RuntimeError("không mở được trang domain trong Cloudflare")
         # Vào DNS > Records
         if not click_text(page, ["Records"]):
@@ -1517,21 +1529,33 @@ def namecheap_open_manage(page, domain):
     log(f"  Namecheap: tìm {domain} trong Domain List")
     # Link thẳng tới trang Manage (user gửi 2026-11-19) — kiểm tra đã
     # vào đúng trang Manage chưa (thấy mục Nameservers) rồi mới tin.
+    # Trang là SPA, tab mới mở còn lạnh nên đợi tới 15s; thử lại 1 lần
+    # nếu lần đầu chưa load (lỗi chạy 2026-11-19 10:21: link thẳng
+    # trượt ở elvellia nhưng fallback Search+MANAGE lại vào được).
+    for attempt in range(2):
+        try:
+            manage_url = f"https://ap.www.namecheap.com/domains/domaincontrolpanel/{domain}/domain"
+            safe_goto(page, manage_url, "trang Manage")
+            ok = False
+            for _ in range(30):
+                if _any_visible(page, "Nameserver") or _any_visible(page, "Custom DNS"):
+                    ok = True
+                    break
+                page.wait_for_timeout(500)
+            if ok:
+                log(f"    đã mở trang Manage (link thẳng): {page.url}")
+                return page.url
+        except Exception:
+            pass
+        if attempt == 0:
+            log("    link thẳng chưa load xong — thử lại 1 lần.")
     try:
-        manage_url = f"https://ap.www.namecheap.com/domains/domaincontrolpanel/{domain}/domain"
-        safe_goto(page, manage_url, "trang Manage")
-        ok = False
-        for _ in range(16):
-            if _any_visible(page, "Nameserver") or _any_visible(page, "Custom DNS"):
-                ok = True
-                break
-            page.wait_for_timeout(500)
-        if ok:
-            log(f"    đã mở trang Manage (link thẳng): {page.url}")
-            return page.url
-        log("    link thẳng không vào được trang Manage — thử cách Search + MANAGE.")
+        body = page.content() or ""
+        log(f"    [chẩn đoán] link thẳng thất bại: url={page.url} title={page.title()!r} "
+            f"co_chu_Nameserver_trong_HTML={'Nameserver' in body}")
     except Exception:
-        log("    link thẳng không vào được trang Manage — thử cách Search + MANAGE.")
+        pass
+    log("    link thẳng không vào được trang Manage — thử cách Search + MANAGE.")
     page.goto("https://ap.www.namecheap.com/domains/list", wait_until="domcontentloaded")
     # Ô Search nằm cạnh Filters (xem _find_list_search: thử nhiều cách,
     # chọn ô đang HIỂN THỊ, không lấy .first vì .first hay trúng ô search
@@ -1818,10 +1842,18 @@ def _ns_already_set(page):
       if (!sel) return {mode: 'other', ns: []};
       // Lay 2 hostname trong cac dong sau 'Custom DNS' (bat ky ten NS
       // nao, khong fix cung) — cac dong chu thuong nhu 'redirect
-      // domain' / 'alert' xen vao thi bo qua vi khong phai hostname
-      // (loi chay 2026-11-19 10:06: lay 2 dong dau tien tra ve
-      // 'redirect domain' / 'alert' thay vi 2 NS that).
-      const isHost = t => /^[a-z0-9.-]+$/.test(t) && t.includes('.') && /[a-z]/i.test(t);
+      // domain' / 'alert' xen vao thi bo qua vi khong phai hostname.
+      // Chi nhan hostname that: co dau '.' o giua (khong phai dau
+      // cham cuoi cau nhu 'account.' / 'default.' trong doan chu
+      // '...your Namecheap account. ...to Namecheap default.' — loi
+      // chay 2026-11-19 10:21 tra ve 'account.' / 'default.'), cac
+      // phan cach nhau bang '.' chi gom chu/so/gach noi, phan cuoi
+      // (TLD) it nhat 2 ky tu chu.
+      const isHost = t => {
+        if (!t.includes('.') || t.endsWith('.')) return false;
+        const parts = t.split('.');
+        return parts.length >= 2 && parts.every(p => /^[a-z0-9-]+$/i.test(p)) && parts[parts.length - 1].length >= 2;
+      };
       let a = sel;
       for (let i = 0; i < 6 && a.parentElement; i++) {
         a = a.parentElement;
@@ -1934,18 +1966,34 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
     # 2 NS mới còn hiện (tải lại sẽ hiện NS đã lưu trên server, không
     # phải giá trị vừa gõ còn nằm trong ô chưa lưu). Trang Manage là
     # Angular SPA nên sau khi tải lại phải ĐỢI nó render xong (poll tới
-    # 15s) thay vì check 1 lần sau 2.5s — lần chạy 2026-11-19 09:13 cho
-    # thấy đã lưu xong (tick biến mất, 2 NS hiện ra) mà check 1 lần vẫn
-    # trượt vì trang chưa render kịp.
+    # 20s). Check theo CHỮ HIỂN THỊ THẬT (innerText) chứ không chỉ
+    # HTML thô (page.content) — lần chạy 2026-11-19 10:21 cho thấy NS
+    # đã hiện rõ trên màn hình (ảnh chụp) mà check HTML thô vẫn trượt.
     safe_goto(page, manage_url, "trang Manage")
     found = False
-    for _ in range(30):
-        body = page.content()
-        if ns_list[0] in body and ns_list[1] in body:
+    for _ in range(40):
+        try:
+            text = page.inner_text("body") or ""
+        except Exception:
+            text = ""
+        if ns_list[0] in text and ns_list[1] in text:
             found = True
             break
+        try:
+            body = page.content()
+            if ns_list[0] in body and ns_list[1] in body:
+                found = True
+                break
+        except Exception:
+            pass
         page.wait_for_timeout(500)
     if not found:
+        try:
+            text = page.inner_text("body") or ""
+            i = text.lower().find("nameserver")
+            log(f"    [chẩn đoán] text quanh NAMESERVERS: {text[max(0, i - 50):i + 300]!r}")
+        except Exception:
+            pass
         shot(page, domain, "nc-save-not-verified")
         raise RuntimeError("bấm lưu rồi nhưng tải lại trang Manage không thấy 2 NS mới — có thể chưa lưu được")
     log("    đã lưu NS ở Namecheap.")
