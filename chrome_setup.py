@@ -860,6 +860,10 @@ def cloudflare_add_site(page, domain, dry_run=False):
         shot(page, domain, "cf-add-no-input")
         raise RuntimeError("không tìm được ô nhập domain ở Cloudflare (trang Connect your domain)")
     page.wait_for_timeout(800)
+    # Tắt 'Enable Bot Preference Sync' nếu đang bật — nút nằm ngay trên
+    # trang nhập domain này (ảnh user gửi 2026-11-19: toggle màu xanh
+    # dưới mục Additional configuration), tắt TRƯỚC khi bấm Continue.
+    _disable_bot_preference_sync(page)
     if not _click_visible(page, ["Continue"], timeout=8000):
         try:
             page.keyboard.press("Enter")
@@ -883,10 +887,13 @@ def cloudflare_add_site(page, domain, dry_run=False):
             return ns, "exists"
 
     # 5. Trang Review DNS records -> Continue to activation.
-    # Trước khi bấm: tắt 'Enable Bot Preference Sync' nếu đang bật
-    # (user yêu cầu — nút nằm trên trang Review này).
+    # Sau khi chọn gói Free, trang Review hay bị lag (user báo: nút
+    # chưa hiện mà tool đã bỏ qua) nên đợi tới 30s thay vì 10s.
+    # (Bot Preference Sync đã tắt ở bước nhập domain; giữ lại lệnh tắt
+    # ở đây phòng khi có flow hiện nút ở trang Review.)
     _disable_bot_preference_sync(page)
-    if not _click_visible(page, ["Continue to activation"], timeout=10000):
+    log("    đang đợi trang Review load xong (tối đa 30s)...")
+    if not _click_visible(page, ["Continue to activation"], timeout=30000):
         # Có thể đã ở thẳng trang nameservers (không có bước review)
         if len(extract_ns(page)) < 2:
             shot(page, domain, "cf-no-continue-activation")
