@@ -1720,18 +1720,35 @@ def _fill_ns_input(page, inp, ns):
         pass
 
 
-def _read_current_ns(page):
-    """Đọc NS hiện tại ở trang Manage Namecheap (để biết NS đã set chưa).
-    NS hiện dạng ô input (khi đang sửa) hoặc dòng text (khi đang xem).
-    Trả về list NS *.ns.cloudflare.com đang hiện (chữ thường), [] nếu
-    không đọc được / chưa phải NS Cloudflare."""
+def _ns_already_set(page):
+    """Check ngay o buoc Namecheap (user dan 2026-11-19): do xuong muc
+    NAMESERVERS — neu dropdown la 'Custom DNS' va co 2 dong NS
+    Cloudflare thi da setup roi -> tra ve list 2 NS. Chua setup thi
+    dropdown la 'Namecheap BasicDNS' va khong co dong NS nao -> [].
+    Chi can 1 trong 2 dieu kien thieu (vd Custom DNS nhung chua co dong
+    NS) thi cung coi nhu chua setup -> chay Phase 1 binh thuong.
+    Tra ve list NS (chu thuong) hoac []."""
     try:
-        for _ in range(8):
+        # Dropdown Nameservers: doc gia tri dang chon cua cac <select>.
+        mode = None
+        for s in page.locator("select").all():
+            try:
+                v = s.evaluate("el => { const o = el.options[el.selectedIndex]; return o ? o.textContent.trim() : ''; }")
+                if v:
+                    mode = v
+                    if v == "Custom DNS":
+                        break
+            except Exception:
+                continue
+        if mode != "Custom DNS":
+            return []
+        # Da la Custom DNS: doi 2 dong NS hien ra (trang SPA render cham).
+        for _ in range(6):
             body = page.content() or ""
             found = sorted(set(m.lower() for m in re.findall(r"[a-z0-9.-]+\.ns\.cloudflare\.com", body, re.I)))
-            if found:
+            if len(found) >= 2:
                 return found
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(1000)
         return []
     except Exception:
         return []
@@ -1898,26 +1915,31 @@ def setup_one(nc_page, cf_page, domain, args, presets, file_map):
             # MANAGE), rồi Cloudflare add domain lấy 2 NS, rồi quay lại
             # trang Manage ở Namecheap điền 2 NS vào Custom DNS (ảnh 2).
             manage_url = None
-            current_ns = []
+            ns_list = []
+            ns_skipped = False
             if not args.only_cloudflare:
                 _show(nc_page)
                 manage_url = namecheap_open_manage(nc_page, domain)
-                # Đọc NS hiện tại ở Namecheap ngay từ bước 1 (user dặn):
-                # nếu NS đã là NS Cloudflare thì bỏ qua đổi NS, đi thẳng
-                # Phase 2 (thêm record).
-                current_ns = _read_current_ns(nc_page)
-            _show(cf_page)
-            ns_list, st = cloudflare_add_site(cf_page, domain, dry_run=args.dry_run)
-            result["nameservers"] = ", ".join(ns_list)
-            if args.dry_run:
-                result["status"] = "dry-run-phase1"
-                return result
-            ns_skipped = False
-            if not args.only_cloudflare:
-                if current_ns and set(n.lower() for n in current_ns) == set(n.lower() for n in ns_list):
-                    log(f"  Namecheap: NS đã là NS Cloudflare rồi ({', '.join(current_ns)}) — bỏ qua đổi NS, đi thẳng Phase 2.")
+                # Check ngay o buoc Namecheap (user dan 2026-11-19): do
+                # xuong muc NAMESERVERS — neu dropdown la 'Custom DNS' va
+                # co 2 dong NS Cloudflare thi da setup roi -> nhay thang
+                # Phase 2 (set record), khoi chay Phase 1. Chua setup thi
+                # dropdown la 'Namecheap BasicDNS' va khong co dong NS.
+                ns_already = _ns_already_set(nc_page)
+                if ns_already:
+                    log(f"  Namecheap: NS đã setup sẵn ({', '.join(ns_already)}) — bỏ qua Phase 1, đi thẳng Phase 2.")
+                    ns_list = ns_already
                     ns_skipped = True
-                else:
+                    result["nameservers"] = ", ".join(ns_list)
+                    result["status"] = "dry-run-phase1" if args.dry_run else "phase1-skipped-ns-set"
+            if not ns_skipped:
+                _show(cf_page)
+                ns_list, st = cloudflare_add_site(cf_page, domain, dry_run=args.dry_run)
+                result["nameservers"] = ", ".join(ns_list)
+                if args.dry_run:
+                    result["status"] = "dry-run-phase1"
+                    return result
+                if not args.only_cloudflare:
                     _show(nc_page)
                     namecheap_set_ns(nc_page, domain, ns_list, dry_run=args.dry_run,
                                      manage_url=manage_url)
@@ -1926,8 +1948,7 @@ def setup_one(nc_page, cf_page, domain, args, presets, file_map):
                     # nếu không thấy nút.
                     _show(cf_page)
                     cloudflare_confirm_ns(cf_page, domain)
-            result["status"] = ("phase1-skipped-ns-set" if ns_skipped else
-                                "phase1-done" if args.phase == "1" else "phase1-part")
+                result["status"] = "phase1-done" if args.phase == "1" else "phase1-part"
         if args.phase in ("2", "all"):
             recs = records_for_domain(domain, args, presets, file_map)
             if not recs:

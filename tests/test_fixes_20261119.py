@@ -35,12 +35,19 @@ MANAGE_DELAYED = f"""<html><body>
 }}, 4000);</script></body></html>"""
 
 MANAGE_CF_NS = f"""<html><body><h2>Nameservers</h2>
-<select><option>Custom DNS</option></select>
-<div>{NS1}</div><div>{NS2}</div></body></html>"""
+<select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
+<div>{NS1}</div><div>{NS2}</div>
+<div class="inline-actions"><a class="save" href="#" onclick="sessionStorage.setItem('saved','1');return false">Save</a>
+<a class="cancel" href="#">Cancel</a></div>
+<div>ADD NAMESERVER</div></body></html>"""
 
-MANAGE_REG_NS = """<html><body><h2>Nameservers</h2>
-<select><option>Custom DNS</option></select>
-<div>dns1.registrar-servers.com</div><div>dns2.registrar-servers.com</div></body></html>"""
+MANAGE_BASIC = """<html><body><h2>Nameservers</h2>
+<select><option selected>Namecheap BasicDNS</option><option>Custom DNS</option></select>
+</body></html>"""
+
+MANAGE_CUSTOM_EMPTY = """<html><body><h2>Nameservers</h2>
+<select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
+<div>ADD NAMESERVER</div></body></html>"""
 
 CF_HOME = f"""<html><body><h1>Account home</h1><p>Domains</p>
 <script>if (location.pathname === '/') location.replace('https://dash.cloudflare.com/{ACCT}');</script>
@@ -148,22 +155,51 @@ def test_b(p):
 
 
 def test_c(p):
-    print("TEST C: _read_current_ns...", flush=True)
+    print("TEST C: _ns_already_set (dropdown + 3 dong)...", flush=True)
     b = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
     page = b.new_page()
     route_nc(page, MANAGE_CF_NS)
     page.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
-    assert cs._read_current_ns(page) == [NS1, NS2], cs._read_current_ns(page)
-    print("  OK: NS Cloudflare doc duoc.", flush=True)
-    route_nc2 = page
+    assert cs._ns_already_set(page) == [NS1, NS2], cs._ns_already_set(page)
+    print("  OK: Custom DNS + 2 dong NS -> da setup.", flush=True)
     b.close()
     b2 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
     page2 = b2.new_page()
-    route_nc(page2, MANAGE_REG_NS)
+    route_nc(page2, MANAGE_BASIC)
     page2.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
-    assert cs._read_current_ns(page2) == [], cs._read_current_ns(page2)
-    print("  OK: NS registrar -> [] (khong bo qua).", flush=True)
+    assert cs._ns_already_set(page2) == [], cs._ns_already_set(page2)
+    print("  OK: Namecheap BasicDNS -> chua setup.", flush=True)
     b2.close()
+    b3 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page3 = b3.new_page()
+    route_nc(page3, MANAGE_CUSTOM_EMPTY)
+    page3.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert cs._ns_already_set(page3) == [], cs._ns_already_set(page3)
+    print("  OK: Custom DNS nhung khong co dong NS -> chua setup.", flush=True)
+    b3.close()
+
+
+def test_e(p):
+    print("TEST E: setup_one — NS da setup thi nhay thang Phase 2...", flush=True)
+    from types import SimpleNamespace
+    b = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    nc_page = b.new_page()
+    cf_page = b.new_page()
+    route_nc(nc_page, MANAGE_CF_NS)
+    route_cf(cf_page)
+    args = SimpleNamespace(phase="all", dry_run=False, only_cloudflare=False,
+                           only_namecheap=False, record=["A:@:23.227.38.65"],
+                           preset=None, records_file=None)
+    res = cs.setup_one(nc_page, cf_page, "elvellia.com", args, cs.load_presets(), {})
+    assert res["status"] == "done", res
+    assert res["records"] == "1/1 records", res
+    assert res["nameservers"] == f"{NS1}, {NS2}", res
+    # Chung to Phase 1 bi bo qua hoan toan: nut save o Namecheap khong
+    # duoc bam, trang Connect your domain o Cloudflare khong duoc mo.
+    assert nc_page.evaluate("() => sessionStorage.getItem('saved')") is None, "set_ns da chay (khong duoc chay)"
+    assert cf_page.evaluate("() => sessionStorage.getItem('tried')") is None, "add_site da chay (khong duoc chay)"
+    print("  OK: bo qua add_site + set_ns, di thang records, done.", flush=True)
+    b.close()
 
 
 def test_d(p):
@@ -187,4 +223,5 @@ if __name__ == "__main__":
         test_b(p)
         test_c(p)
         test_d(p)
+        test_e(p)
     print("ALL TESTS PASSED")
