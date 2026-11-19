@@ -96,6 +96,23 @@ MANAGE_DELAYED_SPLIT = f"""<html><body>
   document.getElementById('saved-ns').innerHTML = '<span>brit</span><span>.ns.cloudflare.com</span> <span>langston</span><span>.ns.cloudflare.com</span>';
 }}, 4000);</script></body></html>"""
 
+# Trang Manage SPA: dropdown da chon Custom DNS nhung 2 dong NS chi hien
+# sau 2s (API load cham) — check phai DOI (poll) chu khong ket luan ngay
+# la chua setup (loi chay that 2026-11-19 10:40: du dieu kien bo qua
+# nhung van qua buoc 3 them domain).
+MANAGE_DELAYED_NS = f"""<html><body><h2>Nameservers</h2>
+<select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
+<div id="ns-lines"></div>
+<script>setTimeout(() => {{
+  document.getElementById('ns-lines').innerHTML = '<div>{NS1}</div><div>{NS2}</div>';
+}}, 2000);</script></body></html>"""
+
+# Dropdown dang chon Namecheap BasicDNS (Custom DNS chi la 1 lua chon
+# trong danh sach) — chua setup, tra [] ngay, khong can doi.
+MANAGE_BASIC_SELECTED = """<html><body><h2>Nameservers</h2>
+<select><option selected>Namecheap BasicDNS</option><option>Custom DNS</option></select>
+</body></html>"""
+
 CF_HOME = f"""<html><body><h1>Account home</h1><p>Domains</p>
 <script>if (location.pathname === '/') location.replace('https://dash.cloudflare.com/{ACCT}');</script>
 </body></html>"""
@@ -120,6 +137,20 @@ CF_REVIEW_STUCK = """<html><body><h2>Review DNS records</h2>
 CF_NAMESERVERS = f"""<html><body><h2>Update your nameservers</h2>
 <button>I updated my nameservers</button>
 <p>{NS1}</p><p>{NS2}</p></body></html>"""
+
+# Popup 'already active' that (anh user gui 2026-11-19 10:40): nhap domain
+# da co zone roi, bam Continue thi hien popup nay thay vi trang chon goi.
+CF_CONNECT_ACTIVE = """<html><body><h1>Connect your domain</h1>
+<input type="text" placeholder="example.com">
+<button onclick="location.href='https://dash.cloudflare.com/already-active'">Continue</button>
+</body></html>"""
+
+CF_ALREADY_ACTIVE = """<html><body>
+<div><strong>elvellia.com is already active on Cloudflare</strong>
+<p>This site has been added to this Cloudflare account already.</p>
+<button onclick="location.href='https://dash.cloudflare.com/nameservers'">Go back</button>
+<button onclick="location.href='https://dash.cloudflare.com/nameservers'">Manage elvellia.com</button>
+</div></body></html>"""
 
 # Bang records THAT cua Cloudflare (HTML user gui 2026-11-19): div grid
 # (role=row/columnheader), checkbox la <span role='checkbox'> (Select All
@@ -184,6 +215,25 @@ def route_nc(page, html):
     def handler(route):
         route.fulfill(status=200, content_type="text/html", body=html)
     page.route("**://ap.www.namecheap.com/**", handler)
+
+
+def route_cf_active(page):
+    """Flow add-site gap popup 'already active': Connect -> Continue ->
+    popup -> Manage <domain> -> trang nameservers (co 2 NS)."""
+    def handler(route):
+        url = route.request.url
+        if url == "https://dash.cloudflare.com/" or url == f"https://dash.cloudflare.com/{ACCT}":
+            body = CF_HOME
+        elif "add-site" in url:
+            body = CF_CONNECT_ACTIVE
+        elif url.endswith("/already-active"):
+            body = CF_ALREADY_ACTIVE
+        elif url.endswith("/nameservers"):
+            body = CF_NAMESERVERS
+        else:
+            body = "<html><body>?</body></html>"
+        route.fulfill(status=200, content_type="text/html", body=body)
+    page.route("**://dash.cloudflare.com/**", handler)
 
 
 def test_a(p):
@@ -279,6 +329,24 @@ def test_c(p):
     assert cs._ns_already_set(page7) == [NS1, NS2], cs._ns_already_set(page7)
     print("  OK: 'account.' / 'default.' bi loai, lay dung 2 NS.", flush=True)
     b7.close()
+    # 2 dong NS chi hien sau 2s (SPA load cham): check phai DOI (poll)
+    # chu khong ket luan ngay la chua setup — loi chay that 10:40.
+    b8 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page8 = b8.new_page()
+    route_nc(page8, MANAGE_DELAYED_NS)
+    page8.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert cs._ns_already_set(page8) == [NS1, NS2], cs._ns_already_set(page8)
+    print("  OK: NS hien cham 2s van doi duoc, khong ket luan sai.", flush=True)
+    b8.close()
+    # Dropdown dang chon BasicDNS (Custom DNS chi la lua chon): chua setup,
+    # tra [] ngay khong can doi.
+    b9 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page9 = b9.new_page()
+    route_nc(page9, MANAGE_BASIC_SELECTED)
+    page9.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert cs._ns_already_set(page9) == [], cs._ns_already_set(page9)
+    print("  OK: BasicDNS dang chon -> chua setup, tra [] ngay.", flush=True)
+    b9.close()
 
 
 def test_e(p):
@@ -322,6 +390,38 @@ def test_d(p):
     b.close()
 
 
+def test_f(p):
+    print("TEST F: popup 'already active' o Cloudflare -> bam Manage lay NS...", flush=True)
+    b = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page = b.new_page()
+    route_cf_active(page)
+    ns, st = cs.cloudflare_add_site(page, "elvellia.com")
+    assert st == "exists", st
+    assert set(ns) == {NS1, NS2}, ns
+    print(f"  OK: popup already active -> Manage -> lay duoc NS: {ns}", flush=True)
+    b.close()
+
+
+def test_g(p):
+    print("TEST G: account ID nhap tay (o nhap trong app) uu tien hon tu dong...", flush=True)
+    b = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page = b.new_page()
+    page.goto("about:blank")
+    # Chan dash that de truong hop ID sai (tu do URL) khong ra mang that.
+    page.route("**://dash.cloudflare.com/**",
+               lambda r: r.fulfill(status=200, content_type="text/html", body="<html><body>dash</body></html>"))
+    old = cs.CF_ACCOUNT_ID
+    try:
+        cs.CF_ACCOUNT_ID = ACCT
+        assert cs._cloudflare_account_id(page) == ACCT, "khong dung account ID nhap tay"
+        cs.CF_ACCOUNT_ID = "xyz-khong-dung"
+        assert cs._cloudflare_account_id(page) is None, "account ID sai phai bi bo qua"
+    finally:
+        cs.CF_ACCOUNT_ID = old
+    print("  OK: account ID nhap tay duoc dung, gia tri sai bi bo qua.", flush=True)
+    b.close()
+
+
 if __name__ == "__main__":
     with sync_playwright() as p:
         test_a(p)
@@ -329,4 +429,6 @@ if __name__ == "__main__":
         test_c(p)
         test_d(p)
         test_e(p)
+        test_f(p)
+        test_g(p)
     print("ALL TESTS PASSED")

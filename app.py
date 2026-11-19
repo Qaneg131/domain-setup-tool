@@ -33,6 +33,22 @@ from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 
 BASE_DIR = Path(__file__).resolve().parent
+ACCT_FILE = BASE_DIR / "cf_account_id.txt"
+# Account ID Cloudflare mac dinh (cua user, lay tu link dash user gui) —
+# chi de dien san cho khoi go, user sua tuy y, app luu lai vao cf_account_id.txt.
+DEFAULT_ACCT_ID = "c30bace6d8d169fb77ae278b7d0fc82a"
+
+
+def _load_acct_id():
+    try:
+        v = ACCT_FILE.read_text(encoding="utf-8").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return DEFAULT_ACCT_ID
+
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -79,6 +95,20 @@ class App(tk.Tk):
         self.domains_box = scrolledtext.ScrolledText(self, height=7, font=("Consolas", 11))
         self.domains_box.pack(padx=12, fill="x")
         self.domains_box.insert("1.0", "elvellia.com\nwelvella.com")
+
+        # Cloudflare Account ID: nhap 1 lan, app luu lai (cf_account_id.txt).
+        # Tool dung ID nay de mo thang link DNS records:
+        # dash.cloudflare.com/<account-id>/<domain>/dns/records
+        # (domain thay theo con dang set, account-id co dinh theo tai khoan).
+        acct_row = ttk.Frame(self)
+        acct_row.pack(padx=12, pady=(8, 0), fill="x")
+        ttk.Label(acct_row, text="Cloudflare Account ID:").pack(side="left")
+        self.acct_entry = ttk.Entry(acct_row, width=40, font=("Consolas", 10))
+        self.acct_entry.pack(side="left", padx=(6, 0), fill="x", expand=True)
+        self.acct_entry.insert(0, _load_acct_id())
+        ttk.Label(self, text="Dán 1 lần, app tự lưu lại — tool dùng ID này để mở thẳng link "
+                  "DNS records, domain trong link thay theo con đang set.",
+                  wraplength=740, foreground="#666").pack(padx=12, anchor="w")
 
         # Phase 2 — DNS records: 3 ô (Type / Name / Content), ô nào trống
         # Content thì bỏ qua. Nhập xong bấm nút 2 — nếu NS đã set sẵn ở
@@ -252,6 +282,13 @@ class App(tk.Tk):
             rec_args.append(f"{rtype}:{name}:{content}")
         for item in self.tree.get_children():
             self.tree.delete(item)
+        # Luu Cloudflare account ID lai de lan sau khoi nhap.
+        acct_id = self.acct_entry.get().strip()
+        if acct_id:
+            try:
+                ACCT_FILE.write_text(acct_id + "\n", encoding="utf-8")
+            except Exception:
+                pass
         tmpdir = Path(tempfile.mkdtemp(prefix="domain-app-"))
         dom_file = tmpdir / "domains.txt"
         dom_file.write_text("\n".join(domains) + "\n", encoding="utf-8")
@@ -261,6 +298,8 @@ class App(tk.Tk):
         cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"),
                "--domains-file", str(dom_file),
                "--phase", "all" if rec_args else "1", "--keep-open"]
+        if acct_id:
+            cmd += ["--account-id", acct_id]
         cmd += self._profile_args()
         for r in rec_args:
             cmd += ["--record", r]

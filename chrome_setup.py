@@ -788,10 +788,19 @@ def _disable_bot_preference_sync(page):
         return False
 
 
+# Cloudflare account ID do user nhap o app (o nhap rieng, luu lai) —
+# uu tien hon tu dong do tu URL dash (user dan 2026-11-19: them 1 o
+# nhap account-id, domain trong link thi thay theo con dang set).
+CF_ACCOUNT_ID = None
+
+
 def _cloudflare_account_id(page):
-    """Account ID Cloudflare (32 ký tự hex) — cố định theo tài khoản,
-    lấy từ URL dash hiện tại (sau khi đăng nhập, dash tự redirect về
+    """Account ID Cloudflare (32 ký tự hex) — cố định theo tài khoản.
+    Uu tien gia tri user nhap o app (--account-id); khong co thi lay
+    từ URL dash hiện tại (sau khi đăng nhập, dash tự redirect về
     /<account-id>). Trả về None nếu không lấy được."""
+    if CF_ACCOUNT_ID and re.fullmatch(r"[0-9a-f]{32}", CF_ACCOUNT_ID.strip().lower()):
+        return CF_ACCOUNT_ID.strip().lower()
     try:
         m = re.search(r"dash\.cloudflare\.com/([0-9a-f]{32})", page.url or "")
         if m:
@@ -836,6 +845,9 @@ def _retry_add_site_via_link(page, domain):
         _disable_bot_preference_sync(page)
         _click_visible(page, ["Continue"], timeout=8000)
         page.wait_for_timeout(3000)
+        ns_active = _handle_already_active(page, domain)
+        if ns_active:
+            return ns_active
         if _any_visible(page, "I updated my nameservers"):
             ns = extract_ns(page)
             if len(ns) == 2:
@@ -847,6 +859,41 @@ def _retry_add_site_via_link(page, domain):
             ns = extract_ns(page)
             if len(ns) == 2:
                 return ns
+        return None
+    except Exception:
+        return None
+
+
+def _handle_already_active(page, domain):
+    """Popup 'X is already active on Cloudflare' (hien khi nhap domain
+    da co zone roi roi bam Continue): nghia la domain da setup — bam
+    'Manage <domain>' de vao trang quan ly roi lay 2 NS. Khong co popup
+    thi tra None ngay (khong lam cham flow binh thuong). Tra ve list 2
+    NS hoac None."""
+    try:
+        if not (_any_visible(page, "is already active on Cloudflare") or
+                _any_visible(page, "has been added to this Cloudflare account already")):
+            return None
+        log("    domain đã active sẵn trên Cloudflare (popup already active) — mở trang quản lý để lấy NS.")
+        if click_text(page, [f"Manage {domain}"], timeout=8000):
+            page.wait_for_timeout(3000)
+            ns = extract_ns(page)
+            if len(ns) == 2:
+                return ns
+        # Nut Manage khong bam duoc / trang quan ly khong hien NS: thu
+        # mo domain tu dash home roi lay NS (cach exists-check cu).
+        page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+        try:
+            link = page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first
+            if link.is_visible(timeout=5000):
+                link.click()
+                page.wait_for_timeout(2500)
+                ns = extract_ns(page)
+                if len(ns) == 2:
+                    return ns
+        except Exception:
+            pass
         return None
     except Exception:
         return None
@@ -950,6 +997,14 @@ def cloudflare_add_site(page, domain, dry_run=False):
         except Exception:
             pass
     page.wait_for_timeout(3000)
+
+    # Domain da active san: Cloudflare hien popup 'X is already active
+    # on Cloudflare' thay vi trang chon goi — bam 'Manage <domain>' lay
+    # NS roi ve (khong dung o day; loi chay 2026-11-19 10:40).
+    ns_active = _handle_already_active(page, domain)
+    if ns_active:
+        log(f"    domain đã active sẵn, lấy NS ở trang quản lý: {ns_active[0]}, {ns_active[1]}")
+        return ns_active, "exists"
 
     # 4. Chọn gói Free (nếu trang gói hiện ra) — xem _select_free_plan:
     # phải ĐỢI trang gói load xong rồi mới bấm, và kiểm tra trang đã
@@ -1169,15 +1224,20 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
     log(f"  Cloudflare: thêm {len(records)} record cho {domain}")
     # Vào thẳng trang DNS records (link user gửi 2026-11-19):
     # https://dash.cloudflare.com/<account-id>/<domain>/dns/records
+    # Vao thang trang DNS records bang link (user dan 2026-11-19):
+    # https://dash.cloudflare.com/<account-id>/<domain>/dns/records
+    # (account-id lay tu o nhap trong app, domain thay theo con dang
+    # set). Link dung va da dang nhap la vao duoc (user bam tay van vo);
+    # tab moi mo con lanh nen trang records load cham — poll toi 10s
+    # thay vi check 1 lan sau 2.5s (loi chay 2026-11-19 10:21).
+    # TAM THOI BO QUA cach bam tay (dash home -> link domain -> DNS ->
+    # Records) theo user 2026-11-19 — thao tac tay buoc 1 Phase 2 dang
+    # sai; chi dung link thang, thu lai 1 lan roi bao loi neu van truot.
     on_records = False
     acct = _cloudflare_account_id(page)
     if not acct:
-        log("    [chẩn đoán] không lấy được Cloudflare account ID từ URL — thử cách bấm.")
-    else:
-        # Link đúng và đã đăng nhập là vào được (user bấm tay vẫn vô);
-        # tab mới mở còn lạnh nên trang records load chậm — poll tới 10s
-        # thay vì check 1 lần sau 2.5s (lỗi chạy 2026-11-19 10:21 ở
-        # elvellia: link thẳng + cách bấm đều trượt).
+        raise RuntimeError("không lấy được Cloudflare account ID — nhập account ID vào ô trong app rồi chạy lại")
+    for attempt in range(2):
         try:
             safe_goto(page, f"https://dash.cloudflare.com/{acct}/{domain}/dns/records", "trang DNS records")
             for _ in range(20):
@@ -1187,20 +1247,14 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
                 page.wait_for_timeout(500)
             if on_records:
                 log("    đã mở trang DNS records (link thẳng).")
-            else:
-                log(f"    [chẩn đoán] link thẳng không thấy 'Add record': url={page.url} title={page.title()!r}")
+                break
+            log(f"    [chẩn đoán] link thẳng chưa thấy 'Add record' (lần {attempt + 1}): url={page.url} title={page.title()!r}")
         except Exception:
             pass
+        if attempt == 0:
+            log("    link thẳng chưa load xong — thử lại 1 lần.")
     if not on_records:
-        log("    link thẳng không mở được trang DNS records — thử cách bấm.")
-        page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
-        try:
-            page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=12000)
-            page.wait_for_timeout(2500)
-        except Exception:
-            log(f"    [chẩn đoán] cách bấm thất bại: url={page.url} title={page.title()!r}")
-            raise RuntimeError("không mở được trang domain trong Cloudflare")
+        raise RuntimeError("không mở được trang DNS records trong Cloudflare (link thẳng)")
         # Vào DNS > Records
         if not click_text(page, ["Records"]):
             click_text(page, ["DNS"])
@@ -1835,11 +1889,17 @@ def _ns_already_set(page):
     nhu chua setup -> chay Phase 1 binh thuong.
     Tra ve list 2 dong NS (noi dung nhu tren trang) hoac []."""
     js = """() => {
-      const sel = [...document.querySelectorAll('select')].find(s => {
-        const o = s.options[s.selectedIndex];
-        return o && o.textContent.trim() === 'Custom DNS';
-      });
-      if (!sel) return {mode: 'other', ns: []};
+      // Tim select cua muc NAMESERVERS (co 'Custom DNS' trong danh sach
+      // lua chon) — khong doi no dang chon san 'Custom DNS', vi trang
+      // la SPA: luc moi load xong dropdown co the van dang o gia tri
+      // mac dinh / chua set, check ngay luc do se ket luan sai la chua
+      // setup (loi chay 2026-11-19 10:40: du dieu kien bo qua nhung van
+      // qua buoc 3 them domain).
+      const sel = [...document.querySelectorAll('select')].find(s =>
+        [...s.options].some(o => o.textContent.trim() === 'Custom DNS'));
+      if (!sel) return {mode: 'loading', ns: []};
+      const cur = ((sel.options[sel.selectedIndex] || {}).textContent || '').trim();
+      if (cur !== 'Custom DNS') return {mode: cur || 'loading', ns: []};
       // Lay 2 hostname trong cac dong sau 'Custom DNS' (bat ky ten NS
       // nao, khong fix cung) — cac dong chu thuong nhu 'redirect
       // domain' / 'alert' xen vao thi bo qua vi khong phai hostname.
@@ -1872,14 +1932,18 @@ def _ns_already_set(page):
       }
       return {mode: 'Custom DNS', ns: []};
     }"""
+    # Poll toi 6s cho trang SPA render xong: dropdown co the chua set
+    # gia tri, 2 dong NS co the chua hien. Chi ket luan 'chua setup'
+    # ngay khi dropdown da hien ro 'Namecheap BasicDNS'; con lai (dang
+    # load / Custom DNS nhung chua thay dong NS) thi doi tiep.
     try:
-        for _ in range(6):
+        for _ in range(12):
             res = page.evaluate(js) or {}
             if res.get("ns"):
                 return [str(x).lower() for x in res["ns"]]
-            if res.get("mode") != "Custom DNS":
+            if res.get("mode") == "Namecheap BasicDNS":
                 return []
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(500)
         return []
     except Exception:
         return []
@@ -2147,6 +2211,7 @@ def main():
     ap.add_argument("--cdp-port", type=int, default=CDP_PORT)
     ap.add_argument("--profile", help="Đường dẫn profile Chrome (mặc định tự tìm)")
     ap.add_argument("--profile-dir", help="Hồ sơ Chrome cần dùng, vd 'Default' hay 'Profile 1' (mặc định: hồ sơ dùng gần nhất)")
+    ap.add_argument("--account-id", help="Cloudflare account ID (32 ký tự hex) — nhập 1 lần ở app, khỏi tự dò từ URL dash")
     ap.add_argument("--chrome-path", help="Đường dẫn chrome.exe")
     ap.add_argument("--only-cloudflare", action="store_true")
     ap.add_argument("--only-namecheap", action="store_true")
@@ -2158,6 +2223,17 @@ def main():
     ap.add_argument("--prepare", action="store_true",
                     help="Nút 1: chỉ mở Chrome với 2 tab đăng nhập Cloudflare + Namecheap rồi dừng")
     args = ap.parse_args()
+
+    # Account ID Cloudflare do user nhap (o nhap rieng trong app) —
+    # uu tien hon tu dong do tu URL dash.
+    global CF_ACCOUNT_ID
+    if args.account_id:
+        CF_ACCOUNT_ID = args.account_id.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", CF_ACCOUNT_ID):
+            log(f"CẢNH BÁO: account-id '{args.account_id}' không đúng dạng 32 ký tự hex — bỏ qua, tự dò từ URL dash.")
+            CF_ACCOUNT_ID = None
+        else:
+            log(f"Cloudflare account ID (từ ô nhập): {CF_ACCOUNT_ID}")
 
     profile = args.profile or str(default_profile_dir())
     chrome_exe = args.chrome_path or default_chrome_exe()

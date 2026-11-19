@@ -4,5 +4,7 @@
 reports/
 # Profile riêng của tool — chứa session cookie đăng nhập, TUYỆT ĐỐI không commit
 chrome-profile-tool/
+# Cloudflare account ID user nhập ở app (lưu lại trên máy để khỏi nhập lại)
+cf_account_id.txt
 __pycache__/
 *.pyc
