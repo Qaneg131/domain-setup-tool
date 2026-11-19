@@ -788,26 +788,68 @@ def _disable_bot_preference_sync(page):
         return False
 
 
-def _cloudflare_add_site_url(page):
-    """Link thẳng trang Connect your domain của Cloudflare:
-    https://dash.cloudflare.com/<account-id>/add-site?type=onboard.
-    Account ID (32 ký tự hex) cố định theo tài khoản — lấy từ URL dash
-    hiện tại (sau khi đăng nhập, dash tự redirect về /<account-id>),
-    không đổi theo phiên đăng nhập nên không cần ô nhập link.
-    Trả về None nếu không lấy được -> dùng cách bấm cũ."""
+def _cloudflare_account_id(page):
+    """Account ID Cloudflare (32 ký tự hex) — cố định theo tài khoản,
+    lấy từ URL dash hiện tại (sau khi đăng nhập, dash tự redirect về
+    /<account-id>). Trả về None nếu không lấy được."""
     try:
         m = re.search(r"dash\.cloudflare\.com/([0-9a-f]{32})", page.url or "")
         if m:
-            return f"https://dash.cloudflare.com/{m.group(1)}/add-site?type=onboard"
+            return m.group(1)
         # Chưa ở URL có account ID: mở dash home để nó redirect rồi đọc lại.
         page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
         m = re.search(r"dash\.cloudflare\.com/([0-9a-f]{32})", page.url or "")
-        if m:
-            return f"https://dash.cloudflare.com/{m.group(1)}/add-site?type=onboard"
+        return m.group(1) if m else None
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _cloudflare_add_site_url(page):
+    """Link thẳng trang Connect your domain của Cloudflare:
+    https://dash.cloudflare.com/<account-id>/add-site?type=onboard.
+    Trả về None nếu không lấy được account ID -> dùng cách bấm cũ."""
+    acct = _cloudflare_account_id(page)
+    return f"https://dash.cloudflare.com/{acct}/add-site?type=onboard" if acct else None
+
+
+def _retry_add_site_via_link(page, domain):
+    """Thử lại bằng link add-site thẳng khi bước Review hết 30s vẫn không
+    thấy nút 'Continue to activation' (user dặn 2026-11-19): vào trang
+    Connect your domain, nhập domain, Continue — nếu domain đã set thì
+    nhảy thẳng tới trang Update nameservers -> lấy 2 NS; nếu lần này
+    vào được trang Review thì bấm Continue to activation rồi lấy NS.
+    Trả về list NS hoặc None."""
+    try:
+        add_url = _cloudflare_add_site_url(page)
+        if not add_url:
+            return None
+        safe_goto(page, add_url, "trang Connect your domain")
+        page.wait_for_timeout(2000)
+        box = _first_visible_now(page.locator("input[placeholder*='example.com']"))
+        if not box:
+            box = _first_visible_now(page.locator("input[placeholder*='domain']"))
+        if not box:
+            return None
+        box.click()
+        box.fill(domain)
+        _disable_bot_preference_sync(page)
+        _click_visible(page, ["Continue"], timeout=8000)
+        page.wait_for_timeout(3000)
+        if _any_visible(page, "I updated my nameservers"):
+            ns = extract_ns(page)
+            if len(ns) == 2:
+                log(f"    domain đã set rồi, lấy NS ở trang Update nameservers: {ns[0]}, {ns[1]}")
+                return ns
+            return None
+        if _click_visible(page, ["Continue to activation"], timeout=15000):
+            page.wait_for_timeout(3000)
+            ns = extract_ns(page)
+            if len(ns) == 2:
+                return ns
+        return None
+    except Exception:
+        return None
 
 
 def cloudflare_add_site(page, domain, dry_run=False):
@@ -932,6 +974,14 @@ def cloudflare_add_site(page, domain, dry_run=False):
     _disable_bot_preference_sync(page)
     log("    đang đợi trang Review load xong (tối đa 30s)...")
     if not _click_visible(page, ["Continue to activation"], timeout=30000):
+        # Hết 30s vẫn không thấy nút: có thể zone đã tạo rồi nhưng trang
+        # Review lag/kẹt — thử chạy lại bằng link add-site thẳng (user
+        # dặn): nhập domain vào, nếu domain đã set thì nó nhảy thẳng tới
+        # trang Update nameservers -> lấy NS ở đó.
+        log("    không thấy 'Continue to activation' sau 30s — thử chạy lại bằng link add-site.")
+        ns2 = _retry_add_site_via_link(page, domain)
+        if ns2:
+            return ns2, "exists"
         # Có thể đã ở thẳng trang nameservers (không có bước review)
         if len(extract_ns(page)) < 2:
             shot(page, domain, "cf-no-continue-activation")
@@ -993,24 +1043,129 @@ def cloudflare_confirm_ns(page, domain):
     return False
 
 
+def _delete_all_records(page, domain):
+    """Xóa hết record DNS cũ ở Cloudflare trước khi thêm record mới
+    (user yêu cầu 2026-11-19): tick chọn hết -> bấm 'Delete N records'
+    -> popup hiện lên, gõ 'DELETE' vào ô xác nhận -> bấm Delete.
+    Không có record nào thì thôi. Xóa lỗi mà còn record thì báo lỗi
+    (không thêm chồng lên record cũ)."""
+    try:
+        rows = page.locator("table tbody input[type='checkbox']")
+        try:
+            n = rows.count()
+        except Exception:
+            n = 0
+        if n == 0:
+            log("    (không có record cũ để xóa.)")
+            return True
+        log(f"    xóa {n} record cũ trước khi thêm mới...")
+        sel_all = _first_visible_now(page.locator("thead input[type='checkbox']"))
+        if not sel_all:
+            sel_all = _first_visible_now(page.locator("table input[type='checkbox']"))
+        if not sel_all:
+            raise RuntimeError("không tìm được ô chọn hết record để xóa")
+        sel_all.click(timeout=3000)
+        page.wait_for_timeout(1500)
+        # Nút 'Delete N records' (số N thay đổi theo số record đã chọn).
+        del_btn = _first_visible_now(
+            page.get_by_role("button", name=re.compile(r"Delete \d+ records?", re.I)))
+        if not del_btn:
+            del_btn = _first_visible_now(page.get_by_text(re.compile(r"Delete \d+ records?", re.I)))
+        if not del_btn:
+            raise RuntimeError("không tìm được nút Delete records sau khi chọn hết")
+        del_btn.click(timeout=5000)
+        page.wait_for_timeout(1500)
+        # Popup 'Delete DNS records': gõ 'DELETE' vào ô xác nhận rồi bấm Delete.
+        scope = page
+        try:
+            dlg = page.get_by_role("dialog").first
+            dlg.wait_for(state="visible", timeout=4000)
+            scope = dlg
+        except Exception:
+            pass
+        try:
+            if scope is page:
+                # Không thấy dialog: ô nhập DELETE là ô text hiện CUỐI CÙNG
+                # (popup render cuối body, sau ô Search DNS Records).
+                vis = []
+                for e in page.locator("input[type='text'], input:not([type])").all():
+                    try:
+                        if e.is_visible():
+                            vis.append(e)
+                    except Exception:
+                        continue
+                inp = vis[-1] if vis else None
+            else:
+                inp = scope.locator("input").first
+            if inp is None:
+                raise RuntimeError("không thấy ô nhập")
+            inp.wait_for(state="visible", timeout=3000)
+            inp.click()
+            inp.fill("DELETE")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"không tìm được ô nhập DELETE: {e}")
+        try:
+            scope.get_by_role("button", name="Delete", exact=True).first.click(timeout=3000)
+        except Exception:
+            if not _click_visible(page, ["Delete"], timeout=3000):
+                raise RuntimeError("không tìm được nút Delete trong popup xác nhận")
+        # Đợi bảng trống (hết record) tối đa 15s.
+        for _ in range(30):
+            try:
+                if rows.count() == 0:
+                    log("    đã xóa hết record cũ.")
+                    return True
+            except Exception:
+                pass
+            page.wait_for_timeout(500)
+        raise RuntimeError("xóa record cũ chưa xong (vẫn còn record) — không thêm mới để tránh trùng")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"không xóa được record cũ: {e}")
+
+
 def cloudflare_add_records(page, domain, records, dry_run=False):
     """Thêm DNS record ở Cloudflare DNS > Records."""
     if not records:
         return "no-records"
     log(f"  Cloudflare: thêm {len(records)} record cho {domain}")
-    page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
-    page.wait_for_timeout(2000)
-    try:
-        page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=8000)
-        page.wait_for_timeout(2500)
-    except Exception:
-        raise RuntimeError("không mở được trang domain trong Cloudflare")
-    # Vào DNS > Records
-    if not click_text(page, ["Records"]):
-        click_text(page, ["DNS"])
-        page.wait_for_timeout(1500)
-        click_text(page, ["Records"])
-    page.wait_for_timeout(2000)
+    # Vào thẳng trang DNS records (link user gửi 2026-11-19):
+    # https://dash.cloudflare.com/<account-id>/<domain>/dns/records
+    on_records = False
+    acct = _cloudflare_account_id(page)
+    if acct:
+        try:
+            safe_goto(page, f"https://dash.cloudflare.com/{acct}/{domain}/dns/records", "trang DNS records")
+            page.wait_for_timeout(2500)
+            if _any_visible(page, "Add record") or _any_visible(page, "DNS records for"):
+                on_records = True
+                log("    đã mở trang DNS records (link thẳng).")
+        except Exception:
+            pass
+    if not on_records:
+        log("    link thẳng không mở được trang DNS records — thử cách bấm.")
+        page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        try:
+            page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=8000)
+            page.wait_for_timeout(2500)
+        except Exception:
+            raise RuntimeError("không mở được trang domain trong Cloudflare")
+        # Vào DNS > Records
+        if not click_text(page, ["Records"]):
+            click_text(page, ["DNS"])
+            page.wait_for_timeout(1500)
+            click_text(page, ["Records"])
+        page.wait_for_timeout(2000)
+    # Xóa hết record cũ trước khi thêm mới (user yêu cầu 2026-11-19).
+    # Dry-run thì không xóa thật.
+    if dry_run:
+        log("    [dry-run] sẽ xóa hết record cũ rồi thêm mới — không xóa thật.")
+    else:
+        _delete_all_records(page, domain)
 
     done = 0
     for rec in records:
@@ -1565,6 +1720,23 @@ def _fill_ns_input(page, inp, ns):
         pass
 
 
+def _read_current_ns(page):
+    """Đọc NS hiện tại ở trang Manage Namecheap (để biết NS đã set chưa).
+    NS hiện dạng ô input (khi đang sửa) hoặc dòng text (khi đang xem).
+    Trả về list NS *.ns.cloudflare.com đang hiện (chữ thường), [] nếu
+    không đọc được / chưa phải NS Cloudflare."""
+    try:
+        for _ in range(8):
+            body = page.content() or ""
+            found = sorted(set(m.lower() for m in re.findall(r"[a-z0-9.-]+\.ns\.cloudflare\.com", body, re.I)))
+            if found:
+                return found
+            page.wait_for_timeout(500)
+        return []
+    except Exception:
+        return []
+
+
 def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
     log(f"  Namecheap: đổi NS cho {domain} -> {', '.join(ns_list)}")
     # Quay lại trang Manage đã mở ở bước 1; nếu không còn ở đó thì mở lại
@@ -1644,18 +1816,22 @@ def namecheap_set_ns(page, domain, ns_list, dry_run=False, manage_url=None):
     page.wait_for_timeout(2500)
     # Kiểm tra lại bằng cách tải lại trang Manage: chỉ khi lưu thật thì
     # 2 NS mới còn hiện (tải lại sẽ hiện NS đã lưu trên server, không
-    # phải giá trị vừa gõ còn nằm trong ô chưa lưu).
-    try:
-        page.goto(manage_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
+    # phải giá trị vừa gõ còn nằm trong ô chưa lưu). Trang Manage là
+    # Angular SPA nên sau khi tải lại phải ĐỢI nó render xong (poll tới
+    # 15s) thay vì check 1 lần sau 2.5s — lần chạy 2026-11-19 09:13 cho
+    # thấy đã lưu xong (tick biến mất, 2 NS hiện ra) mà check 1 lần vẫn
+    # trượt vì trang chưa render kịp.
+    safe_goto(page, manage_url, "trang Manage")
+    found = False
+    for _ in range(30):
         body = page.content()
-        if ns_list[0] not in body or ns_list[1] not in body:
-            shot(page, domain, "nc-save-not-verified")
-            raise RuntimeError("bấm lưu rồi nhưng tải lại trang Manage không thấy 2 NS mới — có thể chưa lưu được")
-    except RuntimeError:
-        raise
-    except Exception:
-        pass
+        if ns_list[0] in body and ns_list[1] in body:
+            found = True
+            break
+        page.wait_for_timeout(500)
+    if not found:
+        shot(page, domain, "nc-save-not-verified")
+        raise RuntimeError("bấm lưu rồi nhưng tải lại trang Manage không thấy 2 NS mới — có thể chưa lưu được")
     log("    đã lưu NS ở Namecheap.")
     return "saved"
 
@@ -1722,25 +1898,36 @@ def setup_one(nc_page, cf_page, domain, args, presets, file_map):
             # MANAGE), rồi Cloudflare add domain lấy 2 NS, rồi quay lại
             # trang Manage ở Namecheap điền 2 NS vào Custom DNS (ảnh 2).
             manage_url = None
+            current_ns = []
             if not args.only_cloudflare:
                 _show(nc_page)
                 manage_url = namecheap_open_manage(nc_page, domain)
+                # Đọc NS hiện tại ở Namecheap ngay từ bước 1 (user dặn):
+                # nếu NS đã là NS Cloudflare thì bỏ qua đổi NS, đi thẳng
+                # Phase 2 (thêm record).
+                current_ns = _read_current_ns(nc_page)
             _show(cf_page)
             ns_list, st = cloudflare_add_site(cf_page, domain, dry_run=args.dry_run)
             result["nameservers"] = ", ".join(ns_list)
             if args.dry_run:
                 result["status"] = "dry-run-phase1"
                 return result
+            ns_skipped = False
             if not args.only_cloudflare:
-                _show(nc_page)
-                namecheap_set_ns(nc_page, domain, ns_list, dry_run=args.dry_run,
-                                 manage_url=manage_url)
-                # Quay lại Cloudflare bấm "I updated my nameservers" để
-                # xác nhận (ảnh user gửi) — best-effort, không fail domain
-                # nếu không thấy nút.
-                _show(cf_page)
-                cloudflare_confirm_ns(cf_page, domain)
-            result["status"] = "phase1-done" if args.phase == "1" else "phase1-part"
+                if current_ns and set(n.lower() for n in current_ns) == set(n.lower() for n in ns_list):
+                    log(f"  Namecheap: NS đã là NS Cloudflare rồi ({', '.join(current_ns)}) — bỏ qua đổi NS, đi thẳng Phase 2.")
+                    ns_skipped = True
+                else:
+                    _show(nc_page)
+                    namecheap_set_ns(nc_page, domain, ns_list, dry_run=args.dry_run,
+                                     manage_url=manage_url)
+                    # Quay lại Cloudflare bấm "I updated my nameservers" để
+                    # xác nhận (ảnh user gửi) — best-effort, không fail domain
+                    # nếu không thấy nút.
+                    _show(cf_page)
+                    cloudflare_confirm_ns(cf_page, domain)
+            result["status"] = ("phase1-skipped-ns-set" if ns_skipped else
+                                "phase1-done" if args.phase == "1" else "phase1-part")
         if args.phase in ("2", "all"):
             recs = records_for_domain(domain, args, presets, file_map)
             if not recs:

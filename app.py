@@ -55,7 +55,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"Domain Setup — Namecheap → Cloudflare (bản {_VERSION})")
-        self.geometry("780x680")
+        self.geometry("780x800")
         self.proc = None
         self.thread = None
         self.msg_queue = queue.Queue()
@@ -69,7 +69,9 @@ class App(tk.Tk):
                   foreground="gray").pack(padx=12, pady=(0, 2), anchor="w")
         ttk.Label(self, text="Bước 1: bấm nút 1 để mở 2 tab đăng nhập, đăng nhập xong "
                   "Cloudflare + Namecheap. Bước 2: bấm nút 2 để chạy hàng loạt "
-                  "tới bước 3 (tạo zone + đổi NS). Không cần key, không cần đóng Chrome.",
+                  "tới bước 3 (tạo zone + đổi NS). Nếu đã nhập record ở dưới thì "
+                  "chạy tiếp Phase 2 (xóa record cũ rồi thêm mới); nếu NS đã set "
+                  "sẵn thì đi thẳng tới thêm record. Không cần key, không cần đóng Chrome.",
                   wraplength=740).pack(padx=12, pady=2, anchor="w")
 
         ttk.Label(self, text="Full domain (mỗi dòng 1 domain):",
@@ -77,6 +79,29 @@ class App(tk.Tk):
         self.domains_box = scrolledtext.ScrolledText(self, height=7, font=("Consolas", 11))
         self.domains_box.pack(padx=12, fill="x")
         self.domains_box.insert("1.0", "elvellia.com\nwelvella.com")
+
+        # Phase 2 — DNS records: 3 ô (Type / Name / Content), ô nào trống
+        # Content thì bỏ qua. Nhập xong bấm nút 2 — nếu NS đã set sẵn ở
+        # Namecheap thì tool đi thẳng tới thêm record, khỏi đổi NS lại.
+        ttk.Label(self, text="Phase 2 — DNS records (mỗi dòng 1 record, để trống Content là bỏ qua):",
+                  font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(10, 2), anchor="w")
+        self.rec_rows = []
+        for i in range(3):
+            rrow = ttk.Frame(self)
+            rrow.pack(padx=12, pady=2, fill="x")
+            ttk.Label(rrow, text=f"Record {i+1}:").pack(side="left")
+            type_box = ttk.Combobox(rrow, width=8,
+                                    values=["A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV", "CAA"])
+            type_box.pack(side="left", padx=(6, 0))
+            name_e = ttk.Entry(rrow, width=18)
+            name_e.pack(side="left", padx=(6, 0))
+            content_e = ttk.Entry(rrow, width=34)
+            content_e.pack(side="left", padx=(6, 0), fill="x", expand=True)
+            self.rec_rows.append((type_box, name_e, content_e))
+        ttk.Label(self, text="Type: A/AAAA/CNAME/TXT/MX... — Name: @ là tên domain, www là www — "
+                  "Content: IP hoặc đích đến. Trước khi thêm, tool xóa hết record cũ "
+                  "(chọn hết → gõ DELETE → xóa) rồi mới thêm mới.",
+                  wraplength=740, foreground="#666").pack(padx=12, anchor="w")
 
         # Chọn hồ sơ Chrome: trước đây tool luôn lấy 'Default' nên mở lộn hồ sơ
         # nếu bạn đăng nhập Cloudflare/Namecheap ở hồ sơ khác (vd 'Profile 1').
@@ -118,10 +143,11 @@ class App(tk.Tk):
         self.status.pack(padx=12, anchor="w")
 
         ttk.Label(self, text="Kết quả:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
-        cols = ("domain", "status", "nameservers", "error")
+        cols = ("domain", "status", "nameservers", "records", "error")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=6)
-        for c, w, t in (("domain", 170, "Domain"), ("status", 110, "Status"),
-                        ("nameservers", 230, "Nameservers"), ("error", 230, "Lỗi")):
+        for c, w, t in (("domain", 140, "Domain"), ("status", 110, "Status"),
+                        ("nameservers", 170, "Nameservers"), ("records", 130, "Records"),
+                        ("error", 170, "Lỗi")):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w)
         self.tree.pack(padx=12, fill="x")
@@ -211,14 +237,33 @@ class App(tk.Tk):
         if not domains:
             messagebox.showwarning("Thiếu domain", "Dán domain vào ô trên, mỗi dòng 1 domain.")
             return
+        # Phase 2: gom record từ 3 ô (ô nào Content trống thì bỏ qua).
+        rec_args = []
+        for type_box, name_e, content_e in self.rec_rows:
+            rtype = type_box.get().strip().upper()
+            name = name_e.get().strip()
+            content = content_e.get().strip()
+            if not content:
+                continue
+            if not rtype:
+                rtype = "A"
+            if not name:
+                name = "@"
+            rec_args.append(f"{rtype}:{name}:{content}")
         for item in self.tree.get_children():
             self.tree.delete(item)
         tmpdir = Path(tempfile.mkdtemp(prefix="domain-app-"))
         dom_file = tmpdir / "domains.txt"
         dom_file.write_text("\n".join(domains) + "\n", encoding="utf-8")
+        # Có nhập record thì chạy luôn Phase 2 (phase "all": NS đã set sẵn
+        # thì bỏ qua đổi NS, đi thẳng tới thêm record); không nhập thì
+        # chỉ chạy Phase 1 như cũ.
         cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"),
-               "--domains-file", str(dom_file), "--phase", "1", "--keep-open"]
+               "--domains-file", str(dom_file),
+               "--phase", "all" if rec_args else "1", "--keep-open"]
         cmd += self._profile_args()
+        for r in rec_args:
+            cmd += ["--record", r]
         if self.dry_run.get():
             cmd.append("--dry-run")
         self._start(cmd, "run", "Đang chạy bằng Chrome, xem cửa sổ Chrome để theo dõi...")
@@ -277,7 +322,7 @@ class App(tk.Tk):
                             ok_n += 1
                         self.tree.insert("", "end", values=(
                             r.get("domain", ""), st, r.get("nameservers", ""),
-                            r.get("error", "")))
+                            r.get("records", ""), r.get("error", "")))
             except Exception as e:
                 self.log(f"Không đọc được báo cáo CSV: {e}\n")
         if total:
