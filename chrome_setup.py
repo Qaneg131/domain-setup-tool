@@ -1047,21 +1047,47 @@ def _delete_all_records(page, domain):
     """Xóa hết record DNS cũ ở Cloudflare trước khi thêm record mới
     (user yêu cầu 2026-11-19): tick chọn hết -> bấm 'Delete N records'
     -> popup hiện lên, gõ 'DELETE' vào ô xác nhận -> bấm Delete.
+    Bảng records của Cloudflare KHÔNG phải <table> mà là div grid
+    (role=row/columnheader) — checkbox là <span role='checkbox'> (ô
+    Select All có aria-label='Select All'), input checkbox thật bị ẩn
+    (1px, aria-hidden) nên selector table/input cũ không thấy gì (lỗi
+    chạy 2026-11-19 10:06: báo 'không có record cũ' dù có 8 record).
     Không có record nào thì thôi. Xóa lỗi mà còn record thì báo lỗi
     (không thêm chồng lên record cũ)."""
     try:
-        rows = page.locator("table tbody input[type='checkbox']")
-        try:
-            n = rows.count()
-        except Exception:
-            n = 0
+        # Cho bảng records load xong (API trả về sau khi shell hiện):
+        # đợi tối đa 10s để thấy dòng chữ số lượng hoặc dòng record.
+        n = None
+        for _ in range(20):
+            try:
+                body = page.content() or ""
+                m = re.search(r"You have used\s+(\d+)\s+of\s+200", body)
+                if m:
+                    n = int(m.group(1))
+                    break
+            except Exception:
+                pass
+            try:
+                if page.locator("[role='row']").count() > 1:
+                    n = page.locator("[role='row']").count() - 1
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(500)
+        if n is None:
+            try:
+                n = page.locator("[role='row'] [role='checkbox']").count()
+            except Exception:
+                n = 0
         if n == 0:
             log("    (không có record cũ để xóa.)")
             return True
         log(f"    xóa {n} record cũ trước khi thêm mới...")
-        sel_all = _first_visible_now(page.locator("thead input[type='checkbox']"))
+        # Tick chọn hết: <span role='checkbox' aria-label='Select All'>
+        # ở cột đầu tiên của hàng header (HTML thật user gửi 2026-11-19).
+        sel_all = _first_visible_now(page.locator("[aria-label='Select All']"))
         if not sel_all:
-            sel_all = _first_visible_now(page.locator("table input[type='checkbox']"))
+            sel_all = _first_visible_now(page.locator("[role='checkbox']"))
         if not sel_all:
             raise RuntimeError("không tìm được ô chọn hết record để xóa")
         sel_all.click(timeout=3000)
@@ -1111,10 +1137,19 @@ def _delete_all_records(page, domain):
         except Exception:
             if not _click_visible(page, ["Delete"], timeout=3000):
                 raise RuntimeError("không tìm được nút Delete trong popup xác nhận")
-        # Đợi bảng trống (hết record) tối đa 15s.
+        # Đợi bảng trống (hết record) tối đa 15s: dòng chữ số lượng về
+        # 0, hoặc chỉ còn hàng header (role=row == 1).
         for _ in range(30):
             try:
-                if rows.count() == 0:
+                body = page.content() or ""
+                m = re.search(r"You have used\s+(\d+)\s+of\s+200", body)
+                if m and int(m.group(1)) == 0:
+                    log("    đã xóa hết record cũ.")
+                    return True
+            except Exception:
+                pass
+            try:
+                if page.locator("[role='row']").count() <= 1:
                     log("    đã xóa hết record cũ.")
                     return True
             except Exception:
@@ -1179,15 +1214,39 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
             shot(page, domain, "cf-dns-no-add")
             raise RuntimeError("không tìm được nút Add record")
         page.wait_for_timeout(1200)
+        # Type: chọn đúng loại record. Form Cloudflare dùng dropdown tự
+        # làm (không phải <select>) nên thử nhiều cách; nếu loại hiện
+        # tại đã đúng thì khỏi bấm (bấm vào chỉ mở menu ra, không chọn).
+        type_done = False
         try:
-            # Type: dropdown/combobox đầu tiên trong form
             combo = page.locator("select").last
             if combo.is_visible(timeout=3000):
                 combo.select_option(rtype)
-            else:
-                page.get_by_label(re.compile("Type", re.I)).first.select_option(rtype)
+                type_done = True
         except Exception:
-            # Thử click theo chữ loại record trong menu
+            pass
+        if not type_done:
+            try:
+                ctrl = page.get_by_label(re.compile(r"^Type$", re.I)).first
+                if ctrl.is_visible(timeout=2000):
+                    cur = ""
+                    try:
+                        cur = (ctrl.inner_text() or "").strip().upper()
+                    except Exception:
+                        pass
+                    if cur != rtype:
+                        ctrl.click(timeout=3000)
+                        page.wait_for_timeout(800)
+                        opt = page.get_by_role("option", name=rtype, exact=True).first
+                        if opt.is_visible(timeout=2000):
+                            opt.click(timeout=3000)
+                        else:
+                            _click_visible(page, [rtype], timeout=3000)
+                    type_done = True
+            except Exception:
+                pass
+        if not type_done:
+            # Cuối cùng: bấm chữ loại (cách cũ).
             click_text(page, [rtype])
         # Name + Content: 2 ô text trong form Add record
         try:
@@ -1195,7 +1254,15 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
             # Ô Name thường có label Name, ô Content/Target có label IPv4 address / Target / Content
             name_box = page.get_by_label(re.compile(r"^(Name|Host)", re.I)).first
             if name_box.is_visible(timeout=3000):
-                name_box.click(); name_box.fill("" if name == "@" else name)
+                name_box.click()
+                # Form Cloudflare bắt buộc ô Name có giá trị: '@' là root
+                # (placeholder 'Use @ for root') — điền '@' thật, KHÔNG
+                # để trống (để trống thì báo 'Name is required.' và khóa
+                # nút Save — lỗi chạy 2026-11-19 10:06).
+                name_box.fill(name)
+                got = name_box.input_value()
+                if got.strip() != name.strip():
+                    raise RuntimeError(f"ô Name điền không dính (muốn {name!r}, được {got!r})")
             target_box = None
             for lab in ["IPv4 address", "Target", "Content", "Value", "Text"]:
                 try:
@@ -1222,7 +1289,21 @@ def cloudflare_add_records(page, domain, records, dry_run=False):
                         toggle.click()
             except Exception:
                 pass
-        if not click_text(page, ["Save"]):
+        # Nút Save bị khóa khi Name trống (lỗi 'Name is required.') —
+        # đợi nó mở khóa tối đa 5s rồi mới bấm.
+        clicked_save = False
+        for _ in range(10):
+            save_btn = _first_visible_now(page.get_by_role("button", name="Save", exact=True))
+            if save_btn:
+                try:
+                    if save_btn.is_enabled():
+                        save_btn.click(timeout=3000)
+                        clicked_save = True
+                        break
+                except Exception:
+                    pass
+            page.wait_for_timeout(500)
+        if not clicked_save and not click_text(page, ["Save"]):
             shot(page, domain, "cf-dns-no-save")
             raise RuntimeError("không tìm được nút Save khi thêm record")
         page.wait_for_timeout(2000)
@@ -1735,19 +1816,27 @@ def _ns_already_set(page):
         return o && o.textContent.trim() === 'Custom DNS';
       });
       if (!sel) return {mode: 'other', ns: []};
-      // innerText cua container chua ca cac <option> KHONG duoc chon
-      // (vd 'Namecheap BasicDNS') nen phai loai het chu cua cac option
-      // ra khoi cac dong dem, khong thi no chen vao giua 'Custom DNS'
-      // va 2 dong NS that.
-      const optTexts = new Set([...sel.options].map(o => o.textContent.trim()));
+      // Lay 2 hostname trong cac dong sau 'Custom DNS' (bat ky ten NS
+      // nao, khong fix cung) — cac dong chu thuong nhu 'redirect
+      // domain' / 'alert' xen vao thi bo qua vi khong phai hostname
+      // (loi chay 2026-11-19 10:06: lay 2 dong dau tien tra ve
+      // 'redirect domain' / 'alert' thay vi 2 NS that).
+      const isHost = t => /^[a-z0-9.-]+$/.test(t) && t.includes('.') && /[a-z]/i.test(t);
       let a = sel;
       for (let i = 0; i < 6 && a.parentElement; i++) {
         a = a.parentElement;
         const lines = (a.innerText || '').split(String.fromCharCode(10)).map(x => x.trim()).filter(Boolean);
         const idx = lines.indexOf('Custom DNS');
         if (idx < 0) continue;
-        const after = lines.slice(idx + 1).filter(x => x !== 'ADD NAMESERVER' && !optTexts.has(x));
-        if (after.length >= 2) return {mode: 'Custom DNS', ns: after.slice(0, 2)};
+        const hosts = [];
+        for (const line of lines.slice(idx + 1)) {
+          for (const tok of line.split(' ')) {
+            const v = tok.trim().toLowerCase();
+            if (v && isHost(v) && !hosts.includes(v)) hosts.push(v);
+          }
+          if (hosts.length >= 2) break;
+        }
+        if (hosts.length >= 2) return {mode: 'Custom DNS', ns: hosts.slice(0, 2)};
       }
       return {mode: 'Custom DNS', ns: []};
     }"""

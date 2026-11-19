@@ -60,6 +60,13 @@ MANAGE_OTHER_CONTENT = """<html><body><h2>Nameservers</h2>
 <select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
 <div>dns1.myprovider.net</div><div>dns2.myprovider.net</div></body></html>"""
 
+# Dong chu thuong xen vao giua Custom DNS va 2 dong NS (loi chay that 10:06:
+# lay nham 'redirect domain' / 'alert') — chi lay token hostname.
+MANAGE_POLLUTED = f"""<html><body><h2>Nameservers</h2>
+<select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
+<div>redirect domain</div><div>alert</div>
+<div>{NS1}</div><div>{NS2}</div></body></html>"""
+
 CF_HOME = f"""<html><body><h1>Account home</h1><p>Domains</p>
 <script>if (location.pathname === '/') location.replace('https://dash.cloudflare.com/{ACCT}');</script>
 </body></html>"""
@@ -85,31 +92,42 @@ CF_NAMESERVERS = f"""<html><body><h2>Update your nameservers</h2>
 <button>I updated my nameservers</button>
 <p>{NS1}</p><p>{NS2}</p></body></html>"""
 
+# Bang records THAT cua Cloudflare (HTML user gui 2026-11-19): div grid
+# (role=row/columnheader), checkbox la <span role='checkbox'> (Select All
+# co aria-label='Select All'), input checkbox that bi an — KHONG phai <table>.
 RECORD_ROWS = "".join(
-    f'<tr><td><input type="checkbox"></td><td>elvellia.com</td><td>A</td><td>192.64.119.2</td></tr>'
+    '<div role="row"><div role="cell"><span role="checkbox" aria-checked="false">✓</span></div>'
+    '<div role="cell">elvellia.com</div><div role="cell">A</div>'
+    '<div role="cell">192.64.119.2</div></div>'
     for _ in range(8))
 
 CF_RECORDS = f"""<html><body><h1>DNS records for elvellia.com</h1>
-<p>You have used 8 of 200 available DNS records in this domain.</p>
+<p id="count-text">You have used 8 of 200 available DNS records in this domain.</p>
 <button onclick="document.getElementById('rec-form').style.display=''">Add record</button>
-<table><thead><tr><th><input type="checkbox" id="sel-all"
- onclick="document.querySelectorAll('#rec-tbody input[type=checkbox]').forEach(c=>c.checked=true);document.getElementById('del-n').style.display=''"></th>
-<th>Name</th><th>Type</th><th>Content</th></tr></thead>
-<tbody id="rec-tbody">{RECORD_ROWS}</tbody></table>
+<div role="table">
+<div role="row" aria-rowindex="1">
+<div role="columnheader"><span role="checkbox" tabindex="0" aria-checked="false" aria-label="Select All" data-kumo-component="Checkbox" onclick="selectAll(this)">✓</span></div>
+<div role="columnheader">Name</div><div role="columnheader">Type</div><div role="columnheader">Content</div>
+</div>
+<div id="rec-rows">{RECORD_ROWS}</div>
+</div>
 <button id="del-n" style="display:none"
  onclick="document.getElementById('del-dialog').style.display=''">Delete 8 records</button>
 <div role="dialog" id="del-dialog" style="display:none">
 <h2>Delete DNS records</h2><p>Type in "DELETE" to confirm</p>
 <input type="text" id="del-input">
 <button onclick="document.getElementById('del-dialog').style.display='none'">Cancel</button>
-<button onclick="if (document.getElementById('del-input').value === 'DELETE') {{ document.getElementById('rec-tbody').innerHTML=''; document.getElementById('del-dialog').style.display='none'; }}">Delete</button>
+<button onclick="if (document.getElementById('del-input').value === 'DELETE') {{ document.getElementById('rec-rows').innerHTML=''; document.getElementById('count-text').textContent='You have used 0 of 200 available DNS records in this domain.'; document.getElementById('del-dialog').style.display='none'; }}">Delete</button>
 </div>
 <form id="rec-form" style="display:none">
 <label>Type <select><option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option><option>MX</option></select></label>
-<label>Name <input type="text"></label>
+<label>Name <input type="text" id="name-in" placeholder="Use @ for root" oninput="document.getElementById('save-btn').disabled = !this.value"></label>
 <label>IPv4 address <input type="text"></label>
-<button type="button" onclick="document.title='record-saved'">Save</button>
-</form></body></html>"""
+<button type="button" id="save-btn" disabled onclick="document.title='record-saved'">Save</button>
+</form>
+<script>
+function selectAll(el){{ document.querySelectorAll('#rec-rows [role=checkbox]').forEach(c=>c.setAttribute('aria-checked','true')); el.setAttribute('aria-checked','true'); document.getElementById('del-n').style.display=''; }}
+</script></body></html>"""
 
 
 def route_cf(page):
@@ -204,6 +222,14 @@ def test_c(p):
     assert cs._ns_already_set(page5) == ["dns1.myprovider.net", "dns2.myprovider.net"], cs._ns_already_set(page5)
     print("  OK: 2 dong sau co noi dung bat ky van tinh la da setup.", flush=True)
     b5.close()
+    # Dong chu thuong xen vao ('redirect domain' / 'alert'): bo qua, chi lay 2 hostname.
+    b6 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page6 = b6.new_page()
+    route_nc(page6, MANAGE_POLLUTED)
+    page6.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert cs._ns_already_set(page6) == [NS1, NS2], cs._ns_already_set(page6)
+    print("  OK: dong chu xen vao bi bo qua, lay dung 2 NS.", flush=True)
+    b6.close()
 
 
 def test_e(p):
@@ -239,8 +265,11 @@ def test_d(p):
                                     [{"type": "A", "name": "@", "content": "23.227.38.65", "proxied": True}])
     assert out == "1/1 records", out
     assert page.title() == "record-saved", "record chua duoc luu"
-    assert page.locator("table tbody input[type='checkbox']").count() == 0, "record cu chua xoa het"
-    print("  OK: xoa 8 record cu, them 1 record moi.", flush=True)
+    assert "You have used 0 of 200" in page.content(), "record cu chua xoa het"
+    assert page.locator("#rec-rows [role='row']").count() == 0, "record cu chua xoa het"
+    # O Name phai duoc dien '@' that (khong de trong) thi nut Save moi mo.
+    assert page.locator("#name-in").input_value() == "@", "o Name khong duoc dien '@'"
+    print("  OK: xoa 8 record cu, them 1 record moi (Name='@').", flush=True)
     b.close()
 
 
