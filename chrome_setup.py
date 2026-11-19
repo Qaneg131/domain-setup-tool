@@ -539,6 +539,15 @@ def _any_visible(page, text, max_check=20):
 
 
 # ---------------------------------------------------------------- login check
+def _show(page):
+    """Đưa tab làm việc lên trước để user xem trực tiếp bước đang chạy
+    (2 tab làm việc: Namecheap + Cloudflare, đổi tab qua lại)."""
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+
+
 def ensure_logged_in(page, site, start_url, logged_in_texts, wait_minutes=5):
     # Không dùng input() nữa: app/web chạy nền không có bàn phím để nhấn Enter.
     # Thay vào đó tự kiểm tra mỗi 5 giây — user đăng nhập xong trong cửa sổ
@@ -643,6 +652,11 @@ def _select_free_plan(page, domain):
     while time.time() < deadline:
         if _any_visible(page, "Continue to activation"):
             return True
+        # Domain đã tạo rồi: sau khi nhập domain sẽ nhảy thẳng tới trang
+        # "Update your nameservers" (không có bước chọn gói/Review) —
+        # thấy nút này thì dừng đợi, để bước sau lấy NS ở đó.
+        if _any_visible(page, "I updated my nameservers"):
+            return True
         if _any_visible(page, "Select a plan"):
             break
         page.wait_for_timeout(500)
@@ -712,6 +726,66 @@ def _select_free_plan(page, domain):
             return True
     shot(page, domain, "cf-no-free-plan")
     raise RuntimeError("không bấm được nút 'Select plan' của gói Free ở Cloudflare (đang đứng ở trang chọn gói)")
+
+
+def _disable_bot_preference_sync(page):
+    """Tắt 'Enable Bot Preference Sync' nếu đang BẬT (user yêu cầu:
+    lúc thêm domain thì tắt cái này). Nút là toggle switch trên trang
+    Review DNS records (và có thể ở trang Update nameservers) — tìm
+    theo chữ rồi bấm công tắc kề bên, kiểm tra lại đã tắt chưa.
+    Best-effort: không thấy nút / không đọc được trạng thái thì thôi
+    (có zone/flow không hiện nó), không làm fail domain."""
+    try:
+        res = page.evaluate("""async () => {
+          const isVis = e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 &&
+              getComputedStyle(e).visibility !== 'hidden';
+          };
+          const findSwitch = () => {
+            const labels = [...document.querySelectorAll('*')].filter(
+              e => e.children.length === 0 && isVis(e) &&
+                (e.textContent || '').trim() === 'Enable Bot Preference Sync');
+            for (const label of labels) {
+              let container = label;
+              for (let i = 0; i < 6 && container; i++) {
+                const sw = container.querySelector('[role="switch"], input[type="checkbox"], button[aria-checked], [aria-checked]');
+                if (sw) return sw;
+                container = container.parentElement;
+              }
+            }
+            return null;
+          };
+          const stateOf = sw => {
+            if (!sw) return 'not-found';
+            if (sw.getAttribute('aria-checked') === 'true' || sw.checked === true) return 'on';
+            if (sw.getAttribute('aria-checked') === 'false' || sw.checked === false) return 'off';
+            const ds = (sw.getAttribute('data-state') || sw.getAttribute('data-checked') || '').toLowerCase();
+            if (ds === 'checked' || ds === 'on' || ds === 'true') return 'on';
+            if (ds === 'unchecked' || ds === 'off' || ds === 'false') return 'off';
+            return 'unknown';
+          };
+          let sw = findSwitch();
+          if (!sw) return 'not-found';
+          if (stateOf(sw) === 'off') return 'already-off';
+          if (stateOf(sw) === 'unknown') return 'unknown';
+          sw.click();
+          await new Promise(r => setTimeout(r, 800));
+          sw = findSwitch();
+          return stateOf(sw) === 'off' ? 'turned-off' : 'still-on';
+        }""")
+        if res == 'turned-off':
+            log("    đã tắt 'Enable Bot Preference Sync'.")
+            return True
+        if res == 'already-off':
+            log("    'Enable Bot Preference Sync' đã tắt sẵn.")
+            return True
+        if res in ('not-found', 'no-toggle'):
+            return False
+        log(f"    (không tắt được 'Enable Bot Preference Sync': trạng thái {res} — kiểm tra tay sau.)")
+        return False
+    except Exception:
+        return False
 
 
 def cloudflare_add_site(page, domain, dry_run=False):
@@ -798,7 +872,20 @@ def cloudflare_add_site(page, domain, dry_run=False):
     # rời khỏi trang gói chưa (không bấm chữ "Free", đó chỉ là tiêu đề).
     _select_free_plan(page, domain)
 
-    # 5. Trang Review DNS records -> Continue to activation
+    # 4b. Domain đã tạo rồi: nhập domain xong sẽ nhảy thẳng tới trang
+    # "Update your nameservers" (không có bước chọn gói/Review) — lấy
+    # 2 NS ở đây rồi về, khỏi làm tiếp (user dặn: copy NS rồi qua
+    # Namecheap đổi, xong quay lại bấm "I updated my nameservers").
+    if _any_visible(page, "I updated my nameservers"):
+        ns = extract_ns(page)
+        if len(ns) == 2:
+            log(f"    domain đã tạo rồi, lấy NS ở trang Update nameservers: {ns[0]}, {ns[1]}")
+            return ns, "exists"
+
+    # 5. Trang Review DNS records -> Continue to activation.
+    # Trước khi bấm: tắt 'Enable Bot Preference Sync' nếu đang bật
+    # (user yêu cầu — nút nằm trên trang Review này).
+    _disable_bot_preference_sync(page)
     if not _click_visible(page, ["Continue to activation"], timeout=10000):
         # Có thể đã ở thẳng trang nameservers (không có bước review)
         if len(extract_ns(page)) < 2:
@@ -840,6 +927,9 @@ def cloudflare_confirm_ns(page, domain):
             except Exception:
                 pass
             page.wait_for_timeout(2500)
+        # Tắt Bot Preference Sync nếu đang bật (nút có thể nằm ở trang
+        # Update nameservers này thay vì trang Review).
+        _disable_bot_preference_sync(page)
         if _click_visible(page, ["I updated my nameservers"], timeout=15000):
             log("    đã bấm 'I updated my nameservers'.")
             page.wait_for_timeout(2000)
@@ -848,6 +938,7 @@ def cloudflare_confirm_ns(page, domain):
         # 'Update your nameservers' / 'Finish setup' rồi tìm nút lại.
         if _click_visible(page, ["Update your nameservers", "Finish setup"], timeout=5000):
             page.wait_for_timeout(2000)
+            _disable_bot_preference_sync(page)
             if _click_visible(page, ["I updated my nameservers"], timeout=10000):
                 log("    đã bấm 'I updated my nameservers'.")
                 return True
@@ -1517,7 +1608,10 @@ def records_for_domain(domain, args, presets, file_map):
 
 
 # ---------------------------------------------------------------- main flow
-def setup_one(page, domain, args, presets, file_map):
+def setup_one(nc_page, cf_page, domain, args, presets, file_map):
+    """Xử lý 1 domain. 2 tab làm việc riêng: nc_page chỉ vào Namecheap,
+    cf_page chỉ vào Cloudflare — đổi tab qua lại thay vì 1 tab goto qua
+    lại đè link (user yêu cầu)."""
     result = {"domain": domain, "status": "", "nameservers": "", "records": "", "error": ""}
     ns_list = []
     try:
@@ -1527,19 +1621,23 @@ def setup_one(page, domain, args, presets, file_map):
             # trang Manage ở Namecheap điền 2 NS vào Custom DNS (ảnh 2).
             manage_url = None
             if not args.only_cloudflare:
-                manage_url = namecheap_open_manage(page, domain)
-            ns_list, st = cloudflare_add_site(page, domain, dry_run=args.dry_run)
+                _show(nc_page)
+                manage_url = namecheap_open_manage(nc_page, domain)
+            _show(cf_page)
+            ns_list, st = cloudflare_add_site(cf_page, domain, dry_run=args.dry_run)
             result["nameservers"] = ", ".join(ns_list)
             if args.dry_run:
                 result["status"] = "dry-run-phase1"
                 return result
             if not args.only_cloudflare:
-                namecheap_set_ns(page, domain, ns_list, dry_run=args.dry_run,
+                _show(nc_page)
+                namecheap_set_ns(nc_page, domain, ns_list, dry_run=args.dry_run,
                                  manage_url=manage_url)
                 # Quay lại Cloudflare bấm "I updated my nameservers" để
                 # xác nhận (ảnh user gửi) — best-effort, không fail domain
                 # nếu không thấy nút.
-                cloudflare_confirm_ns(page, domain)
+                _show(cf_page)
+                cloudflare_confirm_ns(cf_page, domain)
             result["status"] = "phase1-done" if args.phase == "1" else "phase1-part"
         if args.phase in ("2", "all"):
             recs = records_for_domain(domain, args, presets, file_map)
@@ -1551,15 +1649,17 @@ def setup_one(page, domain, args, presets, file_map):
                 # Phase 2 cần biết NS (để verify) nhưng không đổi NS nữa:
                 # lấy NS từ trang Cloudflare của domain
                 try:
-                    page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
-                    page.wait_for_timeout(2000)
-                    page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=8000)
-                    page.wait_for_timeout(2500)
-                    ns_list = extract_ns(page)
+                    _show(cf_page)
+                    cf_page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
+                    cf_page.wait_for_timeout(2000)
+                    cf_page.get_by_role("link", name=re.compile(rf"^{re.escape(domain)}$", re.I)).first.click(timeout=8000)
+                    cf_page.wait_for_timeout(2500)
+                    ns_list = extract_ns(cf_page)
                     result["nameservers"] = ", ".join(ns_list)
                 except Exception:
                     pass
-            out = cloudflare_add_records(page, domain, recs, dry_run=args.dry_run)
+            _show(cf_page)
+            out = cloudflare_add_records(cf_page, domain, recs, dry_run=args.dry_run)
             result["records"] = out
             result["status"] = "done" if args.phase == "all" else "phase2-done"
         # Verify NS (không chạy ở dry-run)
@@ -1710,10 +1810,11 @@ def main():
                 else:
                     log("Cách sửa: chạy start-chrome.bat/.sh trước, rồi chạy tool.")
                 sys.exit(2)
-        # Tab làm việc: mở tab mới RIÊNG cho tool và đưa lên trước để user
-        # xem trực tiếp từng bước. Không chiếm tab web UI hay tab khác của user,
-        # không chạy ẩn. Chỉ dùng lại tab đầu nếu nó đang là about:blank
-        # (Chrome vừa mở, chưa có gì).
+        # 2 tab làm việc riêng — 1 cho Namecheap, 1 cho Cloudflare (user
+        # yêu cầu: mỗi site 1 tab độc lập, đổi tab qua lại thay vì 1 tab
+        # goto qua lại đè link). Không chiếm tab khác của user, không chạy
+        # ẩn. Chỉ dùng lại tab đầu nếu nó đang là about:blank (Chrome vừa
+        # mở, chưa có gì).
         for _ in range(20):
             if context.pages:
                 break
@@ -1721,29 +1822,31 @@ def main():
         log("Chrome đang mở %d tab: %s" % (len(context.pages),
             ", ".join(pg.url[:60] for pg in context.pages[:5]) or "(chưa có tab nào)"))
         if context.pages and context.pages[0].url == "about:blank":
-            page = context.pages[0]
+            nc_page = context.pages[0]
         else:
-            page = context.new_page()
+            nc_page = context.new_page()
+        cf_page = context.new_page()
         if not cdp_mode:
             # Chrome copy có thể khôi phục session cũ thành các tab trắng thừa —
-            # đóng bớt cho gọn, chỉ giữ tab làm việc.
+            # đóng bớt cho gọn, chỉ giữ 2 tab làm việc.
             for pg in list(context.pages):
-                if pg is not page and pg.url == "about:blank":
+                if pg is not nc_page and pg is not cf_page and pg.url == "about:blank":
                     try:
                         pg.close()
                     except Exception:
                         pass
-        page.bring_to_front()
-        log("Đã mở tab làm việc riêng và đưa lên trước để bạn xem trực tiếp.")
-        log("Đã nối vào Chrome, đang mở Cloudflare để kiểm tra đăng nhập...")
+        log("Đã mở 2 tab làm việc riêng: tab Namecheap + tab Cloudflare (đổi tab qua lại, không đè link).")
+        log("Đã nối vào Chrome, đang kiểm tra đăng nhập Cloudflare + Namecheap...")
         try:
-            ensure_logged_in(page, "Cloudflare", "https://dash.cloudflare.com/",
+            _show(cf_page)
+            ensure_logged_in(cf_page, "Cloudflare", "https://dash.cloudflare.com/",
                              ["Account home", "Domains"])
-            ensure_logged_in(page, "Namecheap", "https://ap.www.namecheap.com/domains/list",
+            _show(nc_page)
+            ensure_logged_in(nc_page, "Namecheap", "https://ap.www.namecheap.com/domains/list",
                              ["Domain List", "MANAGE"])
             for d in domains:
                 log(f"=== {d} (phase {args.phase}) ===")
-                results.append(setup_one(page, d, args, presets, file_map))
+                results.append(setup_one(nc_page, cf_page, d, args, presets, file_map))
         finally:
             if not args.keep_open and not cdp_mode:
                 try:
