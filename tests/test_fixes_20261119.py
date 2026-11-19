@@ -54,6 +54,12 @@ MANAGE_OTHER_NS = """<html><body><h2>Nameservers</h2>
 <select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
 <div>ada.ns.cloudflare.com</div><div>bob.ns.cloudflare.com</div></body></html>"""
 
+# 2 dong sau Custom DNS co noi dung bat ky (khong phai dang *.ns.cloudflare.com)
+# — theo luat user: thay 3 dong la du, khong fix cung ten NS.
+MANAGE_OTHER_CONTENT = """<html><body><h2>Nameservers</h2>
+<select><option selected>Custom DNS</option><option>Namecheap BasicDNS</option></select>
+<div>dns1.myprovider.net</div><div>dns2.myprovider.net</div></body></html>"""
+
 CF_HOME = f"""<html><body><h1>Account home</h1><p>Domains</p>
 <script>if (location.pathname === '/') location.replace('https://dash.cloudflare.com/{ACCT}');</script>
 </body></html>"""
@@ -190,6 +196,14 @@ def test_c(p):
     assert cs._ns_already_set(page4) == ["ada.ns.cloudflare.com", "bob.ns.cloudflare.com"], cs._ns_already_set(page4)
     print("  OK: cap NS ten khac (ada/bob) van nhan — khong fix cung ten.", flush=True)
     b4.close()
+    # 2 dong sau Custom DNS co noi dung bat ky (khong phai dang CF NS): van tinh la da setup.
+    b5 = p.chromium.launch(headless=True, executable_path=EXE, args=["--no-sandbox"])
+    page5 = b5.new_page()
+    route_nc(page5, MANAGE_OTHER_CONTENT)
+    page5.goto("https://ap.www.namecheap.com/domains/domaincontrolpanel/elvellia.com/domain")
+    assert cs._ns_already_set(page5) == ["dns1.myprovider.net", "dns2.myprovider.net"], cs._ns_already_set(page5)
+    print("  OK: 2 dong sau co noi dung bat ky van tinh la da setup.", flush=True)
+    b5.close()
 
 
 def test_e(p):

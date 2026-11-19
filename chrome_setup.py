@@ -1722,32 +1722,42 @@ def _fill_ns_input(page, inp, ns):
 
 def _ns_already_set(page):
     """Check ngay o buoc Namecheap (user dan 2026-11-19): do xuong muc
-    NAMESERVERS — neu dropdown la 'Custom DNS' va co 2 dong NS
-    Cloudflare thi da setup roi -> tra ve list 2 NS. Chua setup thi
-    dropdown la 'Namecheap BasicDNS' va khong co dong NS nao -> [].
-    Chi can 1 trong 2 dieu kien thieu (vd Custom DNS nhung chua co dong
-    NS) thi cung coi nhu chua setup -> chay Phase 1 binh thuong.
-    Tra ve list NS (chu thuong) hoac []."""
+    NAMESERVERS — thay 3 dong la du: dong dau la 'Custom DNS', 2 dong
+    tiep co noi dung (bat ky noi dung gi, khong fix cung ten NS nao —
+    Cloudflare hay doi ten NS theo zone). Chua setup thi dropdown la
+    'Namecheap BasicDNS' va khong co dong NS nao. Chi can 1 trong 2
+    dieu kien thieu (vd Custom DNS nhung 2 dong sau trong) thi cung coi
+    nhu chua setup -> chay Phase 1 binh thuong.
+    Tra ve list 2 dong NS (noi dung nhu tren trang) hoac []."""
+    js = """() => {
+      const sel = [...document.querySelectorAll('select')].find(s => {
+        const o = s.options[s.selectedIndex];
+        return o && o.textContent.trim() === 'Custom DNS';
+      });
+      if (!sel) return {mode: 'other', ns: []};
+      // innerText cua container chua ca cac <option> KHONG duoc chon
+      // (vd 'Namecheap BasicDNS') nen phai loai het chu cua cac option
+      // ra khoi cac dong dem, khong thi no chen vao giua 'Custom DNS'
+      // va 2 dong NS that.
+      const optTexts = new Set([...sel.options].map(o => o.textContent.trim()));
+      let a = sel;
+      for (let i = 0; i < 6 && a.parentElement; i++) {
+        a = a.parentElement;
+        const lines = (a.innerText || '').split(String.fromCharCode(10)).map(x => x.trim()).filter(Boolean);
+        const idx = lines.indexOf('Custom DNS');
+        if (idx < 0) continue;
+        const after = lines.slice(idx + 1).filter(x => x !== 'ADD NAMESERVER' && !optTexts.has(x));
+        if (after.length >= 2) return {mode: 'Custom DNS', ns: after.slice(0, 2)};
+      }
+      return {mode: 'Custom DNS', ns: []};
+    }"""
     try:
-        # Dropdown Nameservers: doc gia tri dang chon cua cac <select>.
-        mode = None
-        for s in page.locator("select").all():
-            try:
-                v = s.evaluate("el => { const o = el.options[el.selectedIndex]; return o ? o.textContent.trim() : ''; }")
-                if v:
-                    mode = v
-                    if v == "Custom DNS":
-                        break
-            except Exception:
-                continue
-        if mode != "Custom DNS":
-            return []
-        # Da la Custom DNS: doi 2 dong NS hien ra (trang SPA render cham).
         for _ in range(6):
-            body = page.content() or ""
-            found = sorted(set(m.lower() for m in re.findall(r"[a-z0-9.-]+\.ns\.cloudflare\.com", body, re.I)))
-            if len(found) >= 2:
-                return found
+            res = page.evaluate(js) or {}
+            if res.get("ns"):
+                return [str(x).lower() for x in res["ns"]]
+            if res.get("mode") != "Custom DNS":
+                return []
             page.wait_for_timeout(1000)
         return []
     except Exception:
@@ -1921,10 +1931,11 @@ def setup_one(nc_page, cf_page, domain, args, presets, file_map):
                 _show(nc_page)
                 manage_url = namecheap_open_manage(nc_page, domain)
                 # Check ngay o buoc Namecheap (user dan 2026-11-19): do
-                # xuong muc NAMESERVERS — neu dropdown la 'Custom DNS' va
-                # co 2 dong NS Cloudflare thi da setup roi -> nhay thang
-                # Phase 2 (set record), khoi chay Phase 1. Chua setup thi
-                # dropdown la 'Namecheap BasicDNS' va khong co dong NS.
+                # xuong muc NAMESERVERS — thay 3 dong la du: dong dau la
+                # 'Custom DNS', 2 dong tiep co noi dung (bat ky noi dung
+                # gi) thi da setup roi -> nhay thang Phase 2 (set record),
+                # khoi chay Phase 1. Chua setup thi dropdown la
+                # 'Namecheap BasicDNS' va khong co dong NS.
                 ns_already = _ns_already_set(nc_page)
                 if ns_already:
                     log(f"  Namecheap: NS đã setup sẵn ({', '.join(ns_already)}) — bỏ qua Phase 1, đi thẳng Phase 2.")
