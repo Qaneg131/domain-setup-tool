@@ -788,6 +788,28 @@ def _disable_bot_preference_sync(page):
         return False
 
 
+def _cloudflare_add_site_url(page):
+    """Link thẳng trang Connect your domain của Cloudflare:
+    https://dash.cloudflare.com/<account-id>/add-site?type=onboard.
+    Account ID (32 ký tự hex) cố định theo tài khoản — lấy từ URL dash
+    hiện tại (sau khi đăng nhập, dash tự redirect về /<account-id>),
+    không đổi theo phiên đăng nhập nên không cần ô nhập link.
+    Trả về None nếu không lấy được -> dùng cách bấm cũ."""
+    try:
+        m = re.search(r"dash\.cloudflare\.com/([0-9a-f]{32})", page.url or "")
+        if m:
+            return f"https://dash.cloudflare.com/{m.group(1)}/add-site?type=onboard"
+        # Chưa ở URL có account ID: mở dash home để nó redirect rồi đọc lại.
+        page.goto("https://dash.cloudflare.com/", wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        m = re.search(r"dash\.cloudflare\.com/([0-9a-f]{32})", page.url or "")
+        if m:
+            return f"https://dash.cloudflare.com/{m.group(1)}/add-site?type=onboard"
+    except Exception:
+        pass
+    return None
+
+
 def cloudflare_add_site(page, domain, dry_run=False):
     """Add site ở Cloudflare, trả về (nameservers, status)."""
     log(f"  Cloudflare: thêm {domain}")
@@ -808,38 +830,54 @@ def cloudflare_add_site(page, domain, dry_run=False):
         pass
 
     if dry_run:
-        log("    [dry-run] sẽ bấm Add domain -> Connect a domain -> nhập domain -> chọn Free -> lấy 2 NS — không click thật.")
+        log("    [dry-run] sẽ vào thẳng link add-site -> nhập domain -> chọn Free -> lấy 2 NS — không click thật.")
         return [], "dry-run"
 
-    # Luồng Cloudflare mới (theo ảnh user gửi 2026-11-18):
-    #   Domains -> Overview (anh 1) -> Add domain (anh 2)
-    #   -> Connect a domain (anh 3) -> nhập domain (anh 4) -> Continue
-    #   -> chọn gói Free (anh 5) -> Review DNS records -> Continue to
-    #   activation (anh 6) -> trang Update nameservers, lấy 2 NS.
-    # (Bản cũ bấm "Add a site" rồi bấm chữ "Free" — giao diện mới không
-    # còn nút đó, và bấm chữ "Free" chỉ bấm vào tiêu đề thẻ chứ không
-    # chọn được gói; phải bấm nút "Select plan" trong thẻ Free.)
-    try:
-        dom_nav = _first_visible_now(page.get_by_role("link", name="Domains"))
-        if dom_nav:
-            dom_nav.click(timeout=3000)
-            page.wait_for_timeout(1200)
-    except Exception:
-        pass
-    # Vào Domains Overview (nếu bấm Domains đã tới thẳng đó thì bước này
-    # chỉ bấm lại link Overview ở sidebar, không sao).
-    _click_visible(page, ["Overview"], timeout=5000)
-    page.wait_for_timeout(1500)
-    # 1. Add domain
-    if not _click_visible(page, ["Add domain"], timeout=8000):
-        shot(page, domain, "cf-no-add-domain")
-        raise RuntimeError("không tìm được nút Add domain ở Cloudflare (trang Domains Overview)")
-    page.wait_for_timeout(2000)
-    # 2. Connect a domain (không phải Transfer/Buy a domain)
-    if not _click_visible(page, ["Connect a domain"], timeout=8000):
-        shot(page, domain, "cf-no-connect")
-        raise RuntimeError("không tìm được 'Connect a domain' ở trang Add a site của Cloudflare")
-    page.wait_for_timeout(2000)
+    # Cách chính (user yêu cầu 2026-11-19): vào thẳng trang Connect your
+    # domain bằng link (khỏi bấm Domains -> Overview -> Add domain vì
+    # giao diện Cloudflare hay đổi nên bấm hay trượt). Không vào được
+    # thì fallback sang cách bấm cũ.
+    opened = False
+    add_url = _cloudflare_add_site_url(page)
+    if add_url:
+        try:
+            safe_goto(page, add_url, "trang Connect your domain")
+            page.wait_for_timeout(2000)
+            if _first_visible_now(page.locator("input[placeholder*='example.com']")) or \
+                    _any_visible(page, "Connect your domain"):
+                log("    đã mở trang Connect your domain (link thẳng).")
+                opened = True
+            else:
+                log("    link thẳng không mở được trang Connect your domain — thử cách bấm.")
+        except Exception:
+            log("    link thẳng không mở được trang Connect your domain — thử cách bấm.")
+    if not opened:
+        # Luồng Cloudflare cũ (theo ảnh user gửi 2026-11-18):
+        #   Domains -> Overview (anh 1) -> Add domain (anh 2)
+        #   -> Connect a domain (anh 3) -> nhập domain (anh 4) -> Continue
+        #   -> chọn gói Free (anh 5) -> Review DNS records -> Continue to
+        #   activation (anh 6) -> trang Update nameservers, lấy 2 NS.
+        try:
+            dom_nav = _first_visible_now(page.get_by_role("link", name="Domains"))
+            if dom_nav:
+                dom_nav.click(timeout=3000)
+                page.wait_for_timeout(1200)
+        except Exception:
+            pass
+        # Vào Domains Overview (nếu bấm Domains đã tới thẳng đó thì bước này
+        # chỉ bấm lại link Overview ở sidebar, không sao).
+        _click_visible(page, ["Overview"], timeout=5000)
+        page.wait_for_timeout(1500)
+        # 1. Add domain
+        if not _click_visible(page, ["Add domain"], timeout=8000):
+            shot(page, domain, "cf-no-add-domain")
+            raise RuntimeError("không tìm được nút Add domain ở Cloudflare (trang Domains Overview)")
+        page.wait_for_timeout(2000)
+        # 2. Connect a domain (không phải Transfer/Buy a domain)
+        if not _click_visible(page, ["Connect a domain"], timeout=8000):
+            shot(page, domain, "cf-no-connect")
+            raise RuntimeError("không tìm được 'Connect a domain' ở trang Add a site của Cloudflare")
+        page.wait_for_timeout(2000)
     # 3. Nhập domain (ô "Domain name", placeholder example.com) -> Continue
     filled = False
     deadline = time.time() + 10
@@ -1233,13 +1271,31 @@ def _log_manage_diagnosis(page, domain):
 
 
 def namecheap_open_manage(page, domain):
-    """Mở trang Manage của domain ở Namecheap, đúng luồng user chỉ:
-    ap.www.namecheap.com -> Domain List -> ô Search cạnh Filters -> gõ
-    domain -> Enter -> bấm MANAGE ở dòng đó. Trả về URL trang Manage.
-    (Bản cũ vào thẳng URL manage rồi fallback tìm text domain trên trang 1
-    của list — list có 45 trang nên domain thường không nằm ở trang 1, và
-    nút MANAGE đầu tiên bấm được có thể là của domain khác.)"""
+    """Mở trang Manage của domain ở Namecheap, trả về URL trang Manage.
+    Cách chính (user yêu cầu 2026-11-19): vào thẳng link
+    https://ap.www.namecheap.com/domains/domaincontrolpanel/<domain>/domain
+    (thay tên domain vào trước /domain), khỏi gõ ô Search + bấm MANAGE —
+    giao diện Namecheap hay đổi nên bấm hay trượt. Nếu link thẳng không
+    vào được trang Manage (domain chưa có trong tài khoản / bị redirect)
+    thì fallback sang cách cũ: Domain List -> Search -> MANAGE."""
     log(f"  Namecheap: tìm {domain} trong Domain List")
+    # Link thẳng tới trang Manage (user gửi 2026-11-19) — kiểm tra đã
+    # vào đúng trang Manage chưa (thấy mục Nameservers) rồi mới tin.
+    try:
+        manage_url = f"https://ap.www.namecheap.com/domains/domaincontrolpanel/{domain}/domain"
+        safe_goto(page, manage_url, "trang Manage")
+        ok = False
+        for _ in range(16):
+            if _any_visible(page, "Nameserver") or _any_visible(page, "Custom DNS"):
+                ok = True
+                break
+            page.wait_for_timeout(500)
+        if ok:
+            log(f"    đã mở trang Manage (link thẳng): {page.url}")
+            return page.url
+        log("    link thẳng không vào được trang Manage — thử cách Search + MANAGE.")
+    except Exception:
+        log("    link thẳng không vào được trang Manage — thử cách Search + MANAGE.")
     page.goto("https://ap.www.namecheap.com/domains/list", wait_until="domcontentloaded")
     # Ô Search nằm cạnh Filters (xem _find_list_search: thử nhiều cách,
     # chọn ô đang HIỂN THỊ, không lấy .first vì .first hay trúng ô search
