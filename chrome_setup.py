@@ -137,6 +137,9 @@ def cdp_alive(port=CDP_PORT):
 # ---------------------------------------------------------------- bước 1: mở tab đăng nhập
 CLOUDFLARE_LOGIN_URL = "https://dash.cloudflare.com/login"
 NAMECHEAP_LOGIN_URL = "https://www.namecheap.com/myaccount/login/"
+# Trang Domain List — che do auto-renew mo thang link nay, tim domain
+# roi bam toggle Auto-Renew trong dong cua domain do.
+NAMECHEAP_LIST_URL = "https://ap.www.namecheap.com/domains/list/"
 SESSION_FILE = REPORTS_DIR / "last-chrome.json"
 
 
@@ -162,17 +165,23 @@ def open_tab_via_cdp(port, url):
         return False
 
 
-def prepare_login_chrome(args, profile, profile_dir_name, chrome_exe):
-    """Nút 1 — chỉ mở Chrome với 2 tab đăng nhập Cloudflare + Namecheap,
-    rồi DỪNG Ở ĐÓ. Không điều khiển trang, không kiểm tra, không reload —
-    user tự đăng nhập xong rồi bấm nút 2 để chạy tiếp. Trả về exit code."""
+def prepare_login_chrome(args, profile, profile_dir_name, chrome_exe, urls=None):
+    """Nút 1 — chỉ mở Chrome với các tab đăng nhập rồi DỪNG Ở ĐÓ.
+    Không điều khiển trang, không kiểm tra, không reload — user tự
+    đăng nhập xong rồi bấm nút 2 để chạy tiếp. Trả về exit code.
+    urls: mac dinh [Cloudflare login, Namecheap login]; che do
+    auto-renew chi mo [Namecheap Domain List]."""
+    if urls is None:
+        urls = [CLOUDFLARE_LOGIN_URL, NAMECHEAP_LOGIN_URL]
+    names = {"Cloudflare": "Cloudflare", "Namecheap": "Namecheap"}
     if cdp_alive(args.cdp_port):
-        log(f"Chrome đã mở sẵn qua cổng debug {args.cdp_port} — mở 2 tab đăng nhập trong đó.")
-        open_tab_via_cdp(args.cdp_port, CLOUDFLARE_LOGIN_URL)
-        open_tab_via_cdp(args.cdp_port, NAMECHEAP_LOGIN_URL)
+        log(f"Chrome đã mở sẵn qua cổng debug {args.cdp_port} — mở tab đăng nhập trong đó.")
+        for u in urls:
+            open_tab_via_cdp(args.cdp_port, u)
         write_session({"cdp_port": args.cdp_port, "profile_copy": None, "mode": "cdp"})
-        log("Đã mở 2 tab: Cloudflare + Namecheap.")
-        log("Đăng nhập xong cả 2 tab rồi bấm nút 2 (Chạy tiếp).")
+        log(f"Đã mở {len(urls)} tab: " + " + ".join(
+            "Cloudflare" if "cloudflare" in u else "Namecheap" for u in urls) + ".")
+        log("Đăng nhập xong rồi bấm nút 2 (Chạy tiếp).")
         return 0
     if not chrome_exe or not Path(chrome_exe).exists():
         log("Không tìm thấy chrome.exe — hãy chạy start-chrome.bat trước rồi bấm nút 1 lại.")
@@ -184,8 +193,9 @@ def prepare_login_chrome(args, profile, profile_dir_name, chrome_exe):
         log("   tab đăng nhập vẫn mở, nhưng lúc chạy có thể phải đăng nhập lại.)")
     cmd = [chrome_exe, f"--user-data-dir={use_dir}",
            f"--remote-debugging-port={args.cdp_port}", "--no-first-run",
-           CLOUDFLARE_LOGIN_URL, NAMECHEAP_LOGIN_URL]
-    log("Mở Chrome với 2 tab đăng nhập (Cloudflare + Namecheap)...")
+           *urls]
+    log("Mở Chrome với tab đăng nhập (" + " + ".join(
+        "Cloudflare" if "cloudflare" in u else "Namecheap" for u in urls) + ")...")
     kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -200,8 +210,8 @@ def prepare_login_chrome(args, profile, profile_dir_name, chrome_exe):
         log("Chrome mở lên nhưng không bật được cổng debug — thử bấm nút 1 lại.")
         return 2
     write_session({"cdp_port": args.cdp_port, "profile_copy": profile_copy, "mode": "copy"})
-    log("Đã mở Chrome với 2 tab: Cloudflare + Namecheap.")
-    log("Đăng nhập xong cả 2 tab rồi bấm nút 2 (Chạy tiếp).")
+    log(f"Đã mở Chrome với {len(urls)} tab đăng nhập.")
+    log("Đăng nhập xong rồi bấm nút 2 (Chạy tiếp).")
     return 0
 
 
@@ -1572,6 +1582,216 @@ def _log_manage_diagnosis(page, domain):
         pass
 
 
+# ------------------------------------------------------------------ auto-renew
+# Toggle Auto-Renew trong Domain List la CONG TAC: bam khi dang BAT se
+# TAT di, nen PHAI doc trang thai truoc roi chi bam khi can doi.
+# (User nhac 2026-11-20: nut da bat thi khong tat, tim domain tiep theo.)
+def _autorenew_toggle_state(page, domain):
+    """Trang thai toggle Auto-Renew cua domain trong Domain List.
+    Tra ve True (dang BAT), False (dang TAT), None (khong xac dinh
+    duoc). Doc bang JS trong dong chua ten domain: uu tien
+    role=switch + aria-checked, roi input checkbox (ke ca checkbox
+    nam trong toggle), roi class toggle/switch (on/off/active).
+    Neu list da loc chi con 1 domain thi chap nhan toggle duy nhat
+    tren trang lam du phong."""
+    try:
+        return page.evaluate("""(domain) => {
+          const isVis = e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 &&
+              getComputedStyle(e).visibility !== 'hidden';
+          };
+          const stateOf = el => {
+            const aria = el.getAttribute('aria-checked');
+            if (aria === 'true') return true;
+            if (aria === 'false') return false;
+            if (el.type === 'checkbox') return !!el.checked;
+            const inner = el.querySelector('input[type="checkbox"]');
+            if (inner) return !!inner.checked;
+            const innerAria = el.querySelector('[aria-checked]');
+            if (innerAria) {
+              const a = innerAria.getAttribute('aria-checked');
+              if (a === 'true') return true;
+              if (a === 'false') return false;
+            }
+            const cls = String(el.className || '').toLowerCase();
+            if (/\\bon\\b|\\bactive\\b|\\bchecked\\b|\\benabled\\b/.test(cls)) return true;
+            if (/\\boff\\b|\\bdisabled\\b/.test(cls)) return false;
+            return null;
+          };
+          const inDomainRow = el => {
+            let a = el;
+            while (a) {
+              if (a.tagName === 'TR' ||
+                  (a.className && /row|domain|item/i.test(String(a.className)))) {
+                return a.textContent.includes(domain);
+              }
+              a = a.parentElement;
+            }
+            return false;
+          };
+          const cands = [...document.querySelectorAll(
+            '[role="switch"], input[type="checkbox"], ' +
+            '[class*="toggle" i], [class*="switch" i]')].filter(isVis);
+          for (const el of cands) {
+            if (!inDomainRow(el)) continue;
+            const st = stateOf(el);
+            if (st !== null) return st;
+          }
+          // Du phong: list da loc chi con 1 toggle thi lay no.
+          if (cands.length === 1) {
+            const st = stateOf(cands[0]);
+            if (st !== null) return st;
+          }
+          return null;
+        }""", domain)
+    except Exception:
+        return None
+
+
+def _click_autorenew_toggle(page, domain):
+    """Bam toggle Auto-Renew trong dong cua domain (bang JS, khong can
+    biet toggle la the gi). Tra ve True neu bam duoc."""
+    try:
+        return bool(page.evaluate("""(domain) => {
+          const isVis = e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 &&
+              getComputedStyle(e).visibility !== 'hidden';
+          };
+          const inDomainRow = el => {
+            let a = el;
+            while (a) {
+              if (a.tagName === 'TR' ||
+                  (a.className && /row|domain|item/i.test(String(a.className)))) {
+                return a.textContent.includes(domain);
+              }
+              a = a.parentElement;
+            }
+            return false;
+          };
+          const cands = [...document.querySelectorAll(
+            '[role="switch"], input[type="checkbox"], ' +
+            '[class*="toggle" i], [class*="switch" i]')].filter(isVis);
+          for (const el of cands) {
+            if (!inDomainRow(el)) continue;
+            el.click();
+            return true;
+          }
+          if (cands.length === 1) { cands[0].click(); return true; }
+          return false;
+        }""", domain))
+    except Exception:
+        return False
+
+
+def _click_privacy_dialog(page, want_yes):
+    """Bam Yes/No trong hop thoai 'Turn On Domain Auto-Renewal' (hoi co
+    bat luon auto-renew cho Domain Privacy khong). Tim nut trong khung
+    dialog chua tieu de do; du phong tim trong to tien gan nhat chua
+    ca tieu de va nut. Tra ve True neu bam duoc."""
+    label = "Yes" if want_yes else "No"
+    try:
+        return bool(page.evaluate("""(label) => {
+          const isVis = e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 &&
+              getComputedStyle(e).visibility !== 'hidden';
+          };
+          const titleEls = [...document.querySelectorAll('*')].filter(
+            e => e.children.length === 0 &&
+              e.textContent.includes('Turn On Domain Auto-Renewal') && isVis(e));
+          let scope = document;
+          if (titleEls.length) {
+            let a = titleEls[0];
+            while (a) {
+              const cls = String(a.className || '');
+              if (a.getAttribute('role') === 'dialog' ||
+                  /modal|dialog|popup/i.test(cls)) { scope = a; break; }
+              a = a.parentElement;
+            }
+            if (scope === document) {
+              let b = titleEls[0].parentElement;
+              while (b) {
+                if (b.textContent.includes(label)) { scope = b; break; }
+                b = b.parentElement;
+              }
+            }
+          }
+          const btns = [...scope.querySelectorAll(
+            'button, a, [role="button"]')].filter(
+            b => isVis(b) && b.textContent.trim() === label);
+          if (!btns.length) return false;
+          btns[0].click();
+          return true;
+        }""", label))
+    except Exception:
+        return False
+
+
+def _log_toggle_diagnosis(page, domain):
+    """Khi khong xac dinh duoc trang thai toggle: ghi HTML that cua
+    dong domain vao log de lan sau biet toggle la dang nao."""
+    try:
+        rows = page.locator("tr", has_text=domain)
+        if rows.count() > 0:
+            html = rows.first.evaluate("e => e.outerHTML.slice(0, 600)")
+            log(f"    [chẩn đoán] dòng {domain}: {html}")
+            return
+    except Exception:
+        pass
+    log(f"    [chẩn đoán] không có dòng <tr> chứa {domain}.")
+
+
+def autorenew_one(page, domain, enabled=True, privacy_yes=False):
+    """Bat (hoac tat) auto-renew cho 1 domain trong Domain List.
+    Tra ve dict {domain, status, nameservers, records, error} (cung
+    dang bao cao CSV nhu setup_one de app doc hien bang).
+    status: 'ok' (da doi xong), 'da-bat' (da o dung trang thai — BO
+    QUA, khong bam toggle), 'failed' (loi).
+    Luu y: toggle la cong tac nen PHAI doc trang thai truoc; da BAT
+    roi thi khong bam (bam se TAT di) ma chuyen domain tiep theo."""
+    log(f"  Auto-renew {domain}: tim trong Domain List")
+    try:
+        safe_goto(page, NAMECHEAP_LIST_URL, "Domain List")
+        search = _find_list_search(page)
+        if not search:
+            raise RuntimeError("khong tim thay o Search cua Domain List")
+        _search_domain_in_list(page, search, domain)
+        cur = _autorenew_toggle_state(page, domain)
+        if cur is None:
+            _log_toggle_diagnosis(page, domain)
+            raise RuntimeError("khong xac dinh duoc trang thai toggle "
+                               "Auto-Renew — khong bam (so tat nham)")
+        if cur == enabled:
+            log(f"    {domain}: toggle da {'BAT' if enabled else 'TAT'} roi — bo qua, khong bam.")
+            return {"domain": domain, "status": "da-bat", "nameservers": "",
+                    "records": "", "error": "da o dung trang thai, bo qua"}
+        if not _click_autorenew_toggle(page, domain):
+            raise RuntimeError("khong tim thay / khong bam duoc toggle Auto-Renew")
+        if enabled:
+            # Hop thoai hoi co bat luon cho Domain Privacy khong.
+            # Co domain khong co Privacy thi khong hien hop thoai —
+            # khong thay thi bo qua, kiem tra lai toggle ben duoi.
+            if wait_text(page, "Turn On Domain Auto-Renewal", timeout=15000):
+                if not _click_privacy_dialog(page, privacy_yes):
+                    raise RuntimeError("khong bam duoc nut Yes/No trong "
+                                       "hop thoai Domain Privacy")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            cur2 = _autorenew_toggle_state(page, domain)
+            if cur2 == enabled:
+                log(f"    {domain}: da {'BAT' if enabled else 'TAT'} auto-renew.")
+                return {"domain": domain, "status": "ok", "nameservers": "",
+                        "records": "", "error": ""}
+            time.sleep(1)
+        raise RuntimeError("bam toggle roi nhung kiem tra lai toggle van chua doi")
+    except Exception as e:
+        log(f"    {domain}: LOI auto-renew — {e}")
+        return {"domain": domain, "status": "failed", "nameservers": "",
+                "records": "", "error": str(e)}
+
+
 def namecheap_open_manage(page, domain):
     """Mở trang Manage của domain ở Namecheap, trả về URL trang Manage.
     Cách chính (user yêu cầu 2026-11-19): vào thẳng link
@@ -2222,6 +2442,12 @@ def main():
                     help="Chỉ xoá profile tool đã lưu (đăng xuất hết) rồi thoát, không chạy gì")
     ap.add_argument("--prepare", action="store_true",
                     help="Nút 1: chỉ mở Chrome với 2 tab đăng nhập Cloudflare + Namecheap rồi dừng")
+    ap.add_argument("--prepare-nc", action="store_true",
+                    help="Nút 1 (tab Auto-renew): chỉ mở tab Namecheap Domain List để đăng nhập trước")
+    ap.add_argument("--autorenew", choices=["on", "off"],
+                    help="Tab Auto-renew: bat/tat auto-renew cho cac domain trong Domain List (bam toggle that, khong dung API)")
+    ap.add_argument("--privacy", choices=["yes", "no"], default="no",
+                    help="Khi hop thoai hoi co bat luon auto-renew cho Domain Privacy khong: yes = bam Yes, no = bam No (mac dinh no)")
     args = ap.parse_args()
 
     # Account ID Cloudflare do user nhap (o nhap rieng trong app) —
@@ -2259,6 +2485,9 @@ def main():
         sys.exit(0)
     if args.prepare:
         sys.exit(prepare_login_chrome(args, profile, profile_dir_name, chrome_exe))
+    if args.prepare_nc:
+        sys.exit(prepare_login_chrome(args, profile, profile_dir_name, chrome_exe,
+                                      urls=[NAMECHEAP_LIST_URL]))
 
     domains = []
     if args.domain:
@@ -2359,7 +2588,8 @@ def main():
             nc_page = context.pages[0]
         else:
             nc_page = context.new_page()
-        cf_page = context.new_page()
+        # Che do auto-renew chi can tab Namecheap (khong can Cloudflare).
+        cf_page = None if args.autorenew else context.new_page()
         if not cdp_mode:
             # Chrome copy có thể khôi phục session cũ thành các tab trắng thừa —
             # đóng bớt cho gọn, chỉ giữ 2 tab làm việc.
@@ -2369,31 +2599,55 @@ def main():
                         pg.close()
                     except Exception:
                         pass
-        log("Đã mở 2 tab làm việc riêng: tab Namecheap + tab Cloudflare (đổi tab qua lại, không đè link).")
-        log("Đã nối vào Chrome, đang kiểm tra đăng nhập Cloudflare + Namecheap...")
-        try:
-            _show(cf_page)
-            ensure_logged_in(cf_page, "Cloudflare", "https://dash.cloudflare.com/",
-                             ["Account home", "Domains"])
-            _show(nc_page)
-            ensure_logged_in(nc_page, "Namecheap", "https://ap.www.namecheap.com/domains/list",
-                             ["Domain List", "MANAGE"])
-            for d in domains:
-                log(f"=== {d} (phase {args.phase}) ===")
-                results.append(setup_one(nc_page, cf_page, d, args, presets, file_map))
-        finally:
-            if not args.keep_open and not cdp_mode:
-                try:
-                    context.close()
-                except Exception:
-                    pass
-                # KHÔNG xoá profile tool nữa — giữ lại để cookie đăng nhập
-                # còn nguyên cho lần chạy sau (đăng nhập 1 lần là đủ).
-            elif cdp_mode:
-                try:
-                    browser.close()  # chỉ ngắt kết nối, không đóng Chrome của bạn
-                except Exception:
-                    pass
+        if args.autorenew:
+            log("Đã mở tab Namecheap (chế độ auto-renew — chỉ cần Namecheap).")
+            log("Đã nối vào Chrome, đang kiểm tra đăng nhập Namecheap...")
+            try:
+                _show(nc_page)
+                ensure_logged_in(nc_page, "Namecheap", NAMECHEAP_LIST_URL,
+                                 ["Domain List", "MANAGE"])
+                enabled = args.autorenew == "on"
+                privacy_yes = args.privacy == "yes"
+                for d in domains:
+                    log(f"=== {d} (auto-renew {'BAT' if enabled else 'TAT'}) ===")
+                    results.append(autorenew_one(nc_page, d, enabled, privacy_yes))
+            finally:
+                if not args.keep_open and not cdp_mode:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                elif cdp_mode:
+                    try:
+                        browser.close()  # chỉ ngắt kết nối, không đóng Chrome của bạn
+                    except Exception:
+                        pass
+        else:
+            log("Đã mở 2 tab làm việc riêng: tab Namecheap + tab Cloudflare (đổi tab qua lại, không đè link).")
+            log("Đã nối vào Chrome, đang kiểm tra đăng nhập Cloudflare + Namecheap...")
+            try:
+                _show(cf_page)
+                ensure_logged_in(cf_page, "Cloudflare", "https://dash.cloudflare.com/",
+                                 ["Account home", "Domains"])
+                _show(nc_page)
+                ensure_logged_in(nc_page, "Namecheap", "https://ap.www.namecheap.com/domains/list",
+                                 ["Domain List", "MANAGE"])
+                for d in domains:
+                    log(f"=== {d} (phase {args.phase}) ===")
+                    results.append(setup_one(nc_page, cf_page, d, args, presets, file_map))
+            finally:
+                if not args.keep_open and not cdp_mode:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    # KHÔNG xoá profile tool nữa — giữ lại để cookie đăng nhập
+                    # còn nguyên cho lần chạy sau (đăng nhập 1 lần là đủ).
+                elif cdp_mode:
+                    try:
+                        browser.close()  # chỉ ngắt kết nối, không đóng Chrome của bạn
+                    except Exception:
+                        pass
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = REPORTS_DIR / f"chrome_setup_{ts}.csv"

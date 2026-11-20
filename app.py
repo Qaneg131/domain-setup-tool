@@ -76,23 +76,33 @@ class App(tk.Tk):
         self.thread = None
         self.msg_queue = queue.Queue()
 
-        ttk.Label(self, text="Domain Setup — Namecheap → Cloudflare",
+        # 2 tab: Setup Domain (cu) + Auto-renew (moi) — user yeu cau
+        # 2026-11-20: tab rieng de dan list domain roi bam toggle
+        # Auto-Renew tren Namecheap bang Chrome (API khong lam duoc).
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True)
+        tab_setup = ttk.Frame(self.notebook)
+        self.notebook.add(tab_setup, text="Setup Domain")
+        self.tab_renew = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_renew, text="Auto-renew")
+
+        ttk.Label(tab_setup, text="Domain Setup — Namecheap → Cloudflare",
                   font=("Segoe UI", 14, "bold")).pack(padx=12, pady=(12, 2), anchor="w")
         # Hiện rõ bản đang chạy ngay trên cửa sổ để khỏi nhầm bản cũ
         # với bản mới (nhiều lần user chạy lại vẫn là bản cũ vì chưa
         # pull mà không biết — đối chiếu với số mình báo trong chat).
-        ttk.Label(self, text=f"Bản đang chạy: {_VERSION}",
+        ttk.Label(tab_setup, text=f"Bản đang chạy: {_VERSION}",
                   foreground="gray").pack(padx=12, pady=(0, 2), anchor="w")
-        ttk.Label(self, text="Bước 1: bấm nút 1 để mở 2 tab đăng nhập, đăng nhập xong "
+        ttk.Label(tab_setup, text="Bước 1: bấm nút 1 để mở 2 tab đăng nhập, đăng nhập xong "
                   "Cloudflare + Namecheap. Bước 2: bấm nút 2 để chạy hàng loạt "
                   "tới bước 3 (tạo zone + đổi NS). Nếu đã nhập record ở dưới thì "
                   "chạy tiếp Phase 2 (xóa record cũ rồi thêm mới); nếu NS đã set "
                   "sẵn thì đi thẳng tới thêm record. Không cần key, không cần đóng Chrome.",
                   wraplength=740).pack(padx=12, pady=2, anchor="w")
 
-        ttk.Label(self, text="Full domain (mỗi dòng 1 domain):",
+        ttk.Label(tab_setup, text="Full domain (mỗi dòng 1 domain):",
                   font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(10, 2), anchor="w")
-        self.domains_box = scrolledtext.ScrolledText(self, height=7, font=("Consolas", 11))
+        self.domains_box = scrolledtext.ScrolledText(tab_setup, height=7, font=("Consolas", 11))
         self.domains_box.pack(padx=12, fill="x")
         self.domains_box.insert("1.0", "elvellia.com\nwelvella.com")
 
@@ -100,24 +110,24 @@ class App(tk.Tk):
         # Tool dung ID nay de mo thang link DNS records:
         # dash.cloudflare.com/<account-id>/<domain>/dns/records
         # (domain thay theo con dang set, account-id co dinh theo tai khoan).
-        acct_row = ttk.Frame(self)
+        acct_row = ttk.Frame(tab_setup)
         acct_row.pack(padx=12, pady=(8, 0), fill="x")
         ttk.Label(acct_row, text="Cloudflare Account ID:").pack(side="left")
         self.acct_entry = ttk.Entry(acct_row, width=40, font=("Consolas", 10))
         self.acct_entry.pack(side="left", padx=(6, 0), fill="x", expand=True)
         self.acct_entry.insert(0, _load_acct_id())
-        ttk.Label(self, text="Dán 1 lần, app tự lưu lại — tool dùng ID này để mở thẳng link "
+        ttk.Label(tab_setup, text="Dán 1 lần, app tự lưu lại — tool dùng ID này để mở thẳng link "
                   "DNS records, domain trong link thay theo con đang set.",
                   wraplength=740, foreground="#666").pack(padx=12, anchor="w")
 
         # Phase 2 — DNS records: 3 ô (Type / Name / Content), ô nào trống
         # Content thì bỏ qua. Nhập xong bấm nút 2 — nếu NS đã set sẵn ở
         # Namecheap thì tool đi thẳng tới thêm record, khỏi đổi NS lại.
-        ttk.Label(self, text="Phase 2 — DNS records (mỗi dòng 1 record, để trống Content là bỏ qua):",
+        ttk.Label(tab_setup, text="Phase 2 — DNS records (mỗi dòng 1 record, để trống Content là bỏ qua):",
                   font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(10, 2), anchor="w")
         self.rec_rows = []
         for i in range(3):
-            rrow = ttk.Frame(self)
+            rrow = ttk.Frame(tab_setup)
             rrow.pack(padx=12, pady=2, fill="x")
             ttk.Label(rrow, text=f"Record {i+1}:").pack(side="left")
             type_box = ttk.Combobox(rrow, width=8,
@@ -128,14 +138,14 @@ class App(tk.Tk):
             content_e = ttk.Entry(rrow, width=34)
             content_e.pack(side="left", padx=(6, 0), fill="x", expand=True)
             self.rec_rows.append((type_box, name_e, content_e))
-        ttk.Label(self, text="Type: A/AAAA/CNAME/TXT/MX... — Name: @ là tên domain, www là www — "
+        ttk.Label(tab_setup, text="Type: A/AAAA/CNAME/TXT/MX... — Name: @ là tên domain, www là www — "
                   "Content: IP hoặc đích đến. Trước khi thêm, tool xóa hết record cũ "
                   "(chọn hết → gõ DELETE → xóa) rồi mới thêm mới.",
                   wraplength=740, foreground="#666").pack(padx=12, anchor="w")
 
         # Chọn hồ sơ Chrome: trước đây tool luôn lấy 'Default' nên mở lộn hồ sơ
         # nếu bạn đăng nhập Cloudflare/Namecheap ở hồ sơ khác (vd 'Profile 1').
-        prof_row = ttk.Frame(self)
+        prof_row = ttk.Frame(tab_setup)
         prof_row.pack(padx=12, pady=(8, 0), fill="x")
         ttk.Label(prof_row, text="Hồ sơ Chrome:").pack(side="left")
         self.profile_map = {f"{name} ({d})": d for d, name in _PROFILES}
@@ -149,15 +159,15 @@ class App(tk.Tk):
         else:
             self.profile_box.set("Default (không tìm thấy hồ sơ — sẽ dùng Default)")
             self.profile_box.configure(state="disabled")
-        ttk.Label(self, text="Chọn đúng hồ sơ bạn hay dùng để đăng nhập Cloudflare / Namecheap. "
+        ttk.Label(tab_setup, text="Chọn đúng hồ sơ bạn hay dùng để đăng nhập Cloudflare / Namecheap. "
                   "Sai hồ sơ thì Chrome mở lên sẽ không đăng nhập sẵn.",
                   wraplength=740, foreground="#666").pack(padx=12, anchor="w")
-        self.profile_note = ttk.Label(self, text="", wraplength=740, foreground="#a06a35")
+        self.profile_note = ttk.Label(tab_setup, text="", wraplength=740, foreground="#a06a35")
         self.profile_note.pack(padx=12, anchor="w")
         self.profile_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_profile_note())
         self.refresh_profile_note()
 
-        row = ttk.Frame(self)
+        row = ttk.Frame(tab_setup)
         row.pack(padx=12, pady=8, fill="x")
         self.dry_run = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Dry-run (xem trước, không đổi gì thật)",
@@ -168,13 +178,13 @@ class App(tk.Tk):
         self.prepare_btn.pack(side="right", padx=(6, 0))
         self.run_btn = ttk.Button(row, text="2. Chạy tiếp", command=self.on_run)
         self.run_btn.pack(side="right")
-        self.status = ttk.Label(self, text="Sẵn sàng — bấm nút 1 để mở tab đăng nhập trước.",
+        self.status = ttk.Label(tab_setup, text="Sẵn sàng — bấm nút 1 để mở tab đăng nhập trước.",
                                 foreground="#a06a35")
         self.status.pack(padx=12, anchor="w")
 
-        ttk.Label(self, text="Kết quả:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
+        ttk.Label(tab_setup, text="Kết quả:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
         cols = ("domain", "status", "nameservers", "records", "error")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=6)
+        self.tree = ttk.Treeview(tab_setup, columns=cols, show="headings", height=6)
         for c, w, t in (("domain", 140, "Domain"), ("status", 110, "Status"),
                         ("nameservers", 170, "Nameservers"), ("records", 130, "Records"),
                         ("error", 170, "Lỗi")):
@@ -182,12 +192,76 @@ class App(tk.Tk):
             self.tree.column(c, width=w)
         self.tree.pack(padx=12, fill="x")
 
-        ttk.Label(self, text="Log:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
-        self.log_box = scrolledtext.ScrolledText(self, height=12, font=("Consolas", 10),
+        ttk.Label(tab_setup, text="Log:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
+        self.log_box = scrolledtext.ScrolledText(tab_setup, height=12, font=("Consolas", 10),
                                                  state="disabled")
         self.log_box.pack(padx=12, pady=(0, 12), fill="both", expand=True)
+        self._build_renew_tab()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(150, self.poll_queue)
+
+    def _build_renew_tab(self):
+        """Tab Auto-renew: dan list domain, bam nut 1 mo tab Namecheap
+        de dang nhap truoc, bam nut 2 thi tool noi vao Chrome do, mo
+        tab Domain List moi, tim tung domain roi bam toggle Auto-Renew
+        that (khong dung API — API bao xong nhung toggle khong doi).
+        Toggle da BAT roi thi BO QUA (khong bam, bam se TAT di)."""
+        t = self.tab_renew
+        ttk.Label(t, text="Auto-renew — bật tự động gia hạn trên Namecheap",
+                  font=("Segoe UI", 14, "bold")).pack(padx=12, pady=(12, 2), anchor="w")
+        ttk.Label(t, text="Bước 1: bấm nút 1 để mở tab Namecheap Domain List, đăng nhập "
+                  "Namecheap xong. Bước 2: dán list domain, chọn cách xử lý hộp "
+                  "thoại Domain Privacy, bấm nút 2 — tool tìm từng domain trong "
+                  "Domain List rồi bấm toggle Auto-Renew thật. Domain nào toggle "
+                  "đã BẬT rồi thì bỏ qua, không bấm (bấm sẽ tắt đi). Không cần "
+                  "key, không cần đóng Chrome. Hồ sơ Chrome dùng chung với tab "
+                  "Setup Domain.",
+                  wraplength=740).pack(padx=12, pady=2, anchor="w")
+
+        ttk.Label(t, text="Full domain (mỗi dòng 1 domain):",
+                  font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(10, 2), anchor="w")
+        self.renew_domains_box = scrolledtext.ScrolledText(t, height=7, font=("Consolas", 11))
+        self.renew_domains_box.pack(padx=12, fill="x")
+        self.renew_domains_box.insert("1.0", "baezmail.com\nbursaco.com\ntimlassaire.com")
+
+        priv_row = ttk.Frame(t)
+        priv_row.pack(padx=12, pady=(8, 0), fill="x")
+        ttk.Label(priv_row, text="Hộp thoại Domain Privacy:").pack(side="left")
+        self.privacy_box = ttk.Combobox(priv_row, state="readonly", width=46,
+                                        values=["Chỉ bật cho domain (bấm No)",
+                                                "Bật luôn cả Domain Privacy (bấm Yes)"])
+        self.privacy_box.pack(side="left", padx=(6, 0))
+        self.privacy_box.set("Chỉ bật cho domain (bấm No)")
+        ttk.Label(t, text="Khi bật auto-renew, Namecheap hỏi có bật luôn cho Domain "
+                  "Privacy không. Chọn 'No' thì chỉ bật cho domain; chọn 'Yes' "
+                  "thì bật cả Privacy.",
+                  wraplength=740, foreground="#666").pack(padx=12, anchor="w")
+
+        row = ttk.Frame(t)
+        row.pack(padx=12, pady=8, fill="x")
+        self.renew_prepare_btn = ttk.Button(row, text="1. Mở Namecheap",
+                                            command=self.on_renew_prepare)
+        self.renew_prepare_btn.pack(side="right", padx=(6, 0))
+        self.renew_run_btn = ttk.Button(row, text="2. Bắt đầu bật auto-renew",
+                                        command=self.on_renew_run)
+        self.renew_run_btn.pack(side="right")
+        self.renew_status = ttk.Label(t, text="Sẵn sàng — bấm nút 1 để mở tab Namecheap trước.",
+                                      foreground="#a06a35")
+        self.renew_status.pack(padx=12, anchor="w")
+
+        ttk.Label(t, text="Kết quả:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
+        cols = ("domain", "status", "error")
+        self.renew_tree = ttk.Treeview(t, columns=cols, show="headings", height=6)
+        for c, w, hd in (("domain", 180, "Domain"), ("status", 110, "Trạng thái"),
+                         ("error", 430, "Ghi chú")):
+            self.renew_tree.heading(c, text=hd)
+            self.renew_tree.column(c, width=w)
+        self.renew_tree.pack(padx=12, fill="x")
+
+        ttk.Label(t, text="Log:", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(8, 2), anchor="w")
+        self.renew_log_box = scrolledtext.ScrolledText(t, height=12, font=("Consolas", 10),
+                                                       state="disabled")
+        self.renew_log_box.pack(padx=12, pady=(0, 12), fill="both", expand=True)
 
     def log(self, text):
         self.log_box.configure(state="normal")
@@ -195,12 +269,22 @@ class App(tk.Tk):
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
+    def renew_log(self, text):
+        self.renew_log_box.configure(state="normal")
+        self.renew_log_box.insert("end", text)
+        self.renew_log_box.see("end")
+        self.renew_log_box.configure(state="disabled")
+
     def poll_queue(self):
         try:
             while True:
                 kind, payload = self.msg_queue.get_nowait()
                 if kind == "log":
-                    self.log(payload)
+                    # Log cua tab Auto-renew di vao o log cua tab do.
+                    if getattr(self, "current_mode", "run") in ("prepare_nc", "autorenew"):
+                        self.renew_log(payload)
+                    else:
+                        self.log(payload)
                 elif kind == "done":
                     self.on_done(payload)
         except queue.Empty:
@@ -307,6 +391,45 @@ class App(tk.Tk):
             cmd.append("--dry-run")
         self._start(cmd, "run", "Đang chạy bằng Chrome, xem cửa sổ Chrome để theo dõi...")
 
+    def _start_renew(self, cmd, mode, status_text):
+        self.current_mode = mode
+        self.renew_prepare_btn.configure(state="disabled")
+        self.renew_run_btn.configure(state="disabled")
+        self.renew_status.configure(text=status_text)
+        self.renew_log_box.configure(state="normal")
+        self.renew_log_box.delete("1.0", "end")
+        self.renew_log_box.configure(state="disabled")
+        self.thread = threading.Thread(target=self.run_worker, args=(cmd,), daemon=True)
+        self.thread.start()
+
+    def on_renew_prepare(self):
+        # Nut 1 (tab Auto-renew): chi mo tab Namecheap Domain List de
+        # dang nhap truoc — khong mo tab Cloudflare.
+        cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"), "--prepare-nc"]
+        cmd += self._profile_args()
+        self._start_renew(cmd, "prepare_nc", "Đang mở tab Namecheap để đăng nhập...")
+
+    def on_renew_run(self):
+        # Nut 2 (tab Auto-renew): noi vao Chrome da mo o buoc 1, mo tab
+        # Domain List moi, tim tung domain roi bam toggle Auto-Renew
+        # that. Toggle da BAT roi thi bo qua (khong bam).
+        domains = [l.strip().lower() for l in self.renew_domains_box.get("1.0", "end").splitlines()
+                   if l.strip() and not l.strip().startswith("#")]
+        if not domains:
+            messagebox.showwarning("Thiếu domain", "Dán domain vào ô trên, mỗi dòng 1 domain.")
+            return
+        privacy = "yes" if "Yes" in self.privacy_box.get() else "no"
+        for item in self.renew_tree.get_children():
+            self.renew_tree.delete(item)
+        tmpdir = Path(tempfile.mkdtemp(prefix="domain-app-"))
+        dom_file = tmpdir / "domains.txt"
+        dom_file.write_text("\n".join(domains) + "\n", encoding="utf-8")
+        cmd = [sys.executable, str(BASE_DIR / "chrome_setup.py"),
+               "--domains-file", str(dom_file),
+               "--autorenew", "on", "--privacy", privacy, "--keep-open"]
+        cmd += self._profile_args()
+        self._start_renew(cmd, "autorenew", "Đang bật auto-renew bằng Chrome, xem cửa sổ Chrome để theo dõi...")
+
     def run_worker(self, cmd):
         before = set(glob.glob(str(BASE_DIR / "reports" / "chrome_setup_*.csv")))
         try:
@@ -347,6 +470,43 @@ class App(tk.Tk):
             self.prepare_btn.configure(state="normal")
             self.run_btn.configure(state="normal")
             self.reset_btn.configure(state="normal")
+            self.refresh_profile_note()
+            return
+        if mode == "prepare_nc":
+            if rc == 0:
+                self.renew_status.configure(text="Đã mở tab Namecheap — đăng nhập xong "
+                                                 "rồi bấm nút 2 (Bắt đầu bật auto-renew).")
+            else:
+                self.renew_status.configure(text="Mở tab Namecheap lỗi — xem log bên dưới.")
+            self.renew_prepare_btn.configure(state="normal")
+            self.renew_run_btn.configure(state="normal")
+            self.refresh_profile_note()
+            return
+        if mode == "autorenew":
+            ok_n = 0
+            total = 0
+            if csv_path:
+                try:
+                    with open(csv_path, encoding="utf-8") as f:
+                        for r in csv.DictReader(f):
+                            total += 1
+                            st = r.get("status", "")
+                            if st != "failed":
+                                ok_n += 1
+                            self.renew_tree.insert("", "end", values=(
+                                r.get("domain", ""), st, r.get("error", "")))
+                except Exception as e:
+                    self.renew_log(f"Không đọc được báo cáo CSV: {e}\n")
+            if total:
+                self.renew_status.configure(text=f"Xong: {ok_n}/{total} domain OK "
+                                                 "(tính cả domain đã bật từ trước). "
+                                                 "Chrome vẫn mở để bạn kiểm tra lại.")
+            elif rc == 0:
+                self.renew_status.configure(text="Chạy xong nhưng chưa có báo cáo — xem log bên dưới.")
+            else:
+                self.renew_status.configure(text="Chạy lỗi — xem log bên dưới.")
+            self.renew_prepare_btn.configure(state="normal")
+            self.renew_run_btn.configure(state="normal")
             self.refresh_profile_note()
             return
         ok_n = 0
